@@ -20,6 +20,14 @@ public class RobotPlayer {
     static final int MINERFACTORY_TO_MINER_ST = 3000;
     static final int LAB_TO_LAUNCHER_ST = 3000;
     
+    // Heuristic to see if we need more miners.
+    // If during the last ORE_WINDOW turns, we've gathered more than
+    // MINE_SATURATION ore per turn on average, then produce more miners.
+    // Unless we have more than ORE_SATURATION ore in the bank, then DON'T PRODUCE more miners!
+    static final int ORE_WINDOW = 10;
+    static final double MINE_SATURATION = 0.7;
+    static final int ORE_SATURATION = 700;
+    
     // Build orders/compositions
     static final int[] START_ORDER = new int[RobotType.values().length];
     static final int[] COMP_RATIO = new int[RobotType.values().length];
@@ -58,6 +66,8 @@ public class RobotPlayer {
     
     // Other
     static Direction lastMoveDir;
+    static double prevTeamOre;
+    static double[] prevOreGained = new double[ORE_WINDOW];
     
     public static void run(RobotController tomatojuice) {
         try {
@@ -168,9 +178,30 @@ public class RobotPlayer {
     }
 
     static void runMiner() throws Exception {
-        if (rc.senseOre(myLoc) > 0 && rc.isCoreReady() && rc.canMine())
-            rc.mine();
+        if (!rc.isCoreReady())
+            return;
         
+        RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
+        for (RobotInfo r : enemies)
+            if (r.type.canAttack() && r.type != RobotType.BEAVER && r.type != RobotType.MINER) {
+                lastMoveDir = null;
+                tryMove(directionToInt(myLoc.directionTo(enemies[0].location).opposite()));
+                return;
+            }
+        
+        if (rc.senseOre(myLoc) > 0 && rc.canMine()) {
+            rc.mine();
+            return;
+        }
+        
+        for (Direction dir : directions) {
+            MapLocation loc = myLoc.add(dir);
+            if (rc.senseOre(loc) > 0 && !isBadSpot(loc) && rc.canMove(dir)) {
+                lastMoveDir = dir;
+                rc.move(dir);
+                return;
+            }
+        }
         if (lastMoveDir == null)
             lastMoveDir = tryRandomMove();
         else {
@@ -187,9 +218,19 @@ public class RobotPlayer {
                 mySupply -= MINERFACTORY_TO_MINER_ST;
             }
         
-        int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
-        if (numMiners < MAX_MINERS)
-            trySpawn(RobotType.MINER);
+        if (teamOre < ORE_SATURATION) {
+            int oreGained = 0, turnsOreGained = 0;
+            for (int i = 0; i < ORE_WINDOW; i++)
+                if (prevOreGained[i] > 0) {
+                    oreGained += prevOreGained[i];
+                    turnsOreGained++;
+                }
+            int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
+            if (oreGained >= numMiners * MINE_SATURATION * turnsOreGained)
+                trySpawn(RobotType.MINER);
+        }
+        prevOreGained[roundNum % ORE_WINDOW] = (teamOre > prevTeamOre ? teamOre - prevTeamOre : 0);
+        prevTeamOre = teamOre;
     }
 
     static void runLab() throws Exception {
@@ -357,5 +398,25 @@ public class RobotPlayer {
             default:
                 return -1;
         }
+    }
+    
+    static boolean[][] badSpot = new boolean[GameConstants.MAP_MAX_HEIGHT * 2][GameConstants.MAP_MAX_WIDTH * 2];
+    static boolean[][] badSpotUsed = new boolean[GameConstants.MAP_MAX_HEIGHT * 2][GameConstants.MAP_MAX_WIDTH * 2];
+    static boolean isBadSpot(MapLocation target) throws Exception {
+        int diffY = target.y - myHQ.y + GameConstants.MAP_MAX_HEIGHT;
+        int diffX = target.x - myHQ.x + GameConstants.MAP_MAX_WIDTH;
+        if (!badSpotUsed[diffY][diffX]) {
+            if (enemyHQ.distanceSquaredTo(target) <= 35)
+                badSpot[diffY][diffX] = true;
+            else for (MapLocation loc : rc.senseEnemyTowerLocations())
+                if (loc.distanceSquaredTo(target) <= 24)
+                    badSpot[diffY][diffX] = true;
+            badSpotUsed[diffY][diffX] = true;
+        }
+        return badSpot[diffY][diffX];
+    }
+    
+    static double mine(double current) {
+        return Math.min(3, current / 4);
     }
 }
