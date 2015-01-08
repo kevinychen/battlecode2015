@@ -5,17 +5,20 @@ import java.util.*;
 
 public class RobotPlayer {
     static final Direction[] directions = {Direction.NORTH, Direction.NORTH_EAST, Direction.EAST, Direction.SOUTH_EAST, Direction.SOUTH, Direction.SOUTH_WEST, Direction.WEST, Direction.NORTH_WEST};
-    static final RobotType[] BROADCAST_TYPES = {RobotType.BEAVER, RobotType.MINER, RobotType.MINERFACTORY, RobotType.HELIPAD, RobotType.AEROSPACELAB, RobotType.LAUNCHER};
+    static final RobotType[] BROADCAST_TYPES = {RobotType.BEAVER, RobotType.MINER, RobotType.MINERFACTORY, RobotType.HELIPAD, RobotType.SUPPLYDEPOT, RobotType.AEROSPACELAB, RobotType.LAUNCHER};
+    static final int MAX_MINERS = 40;
     static final int I_BEAVER = RobotType.BEAVER.ordinal();
     static final int I_MINER = RobotType.MINER.ordinal();
     static final int I_MINERFACTORY = RobotType.MINERFACTORY.ordinal();
     static final int I_HELIPAD = RobotType.HELIPAD.ordinal();
     static final int I_LAB = RobotType.AEROSPACELAB.ordinal();
+    static final int I_DEPOT = RobotType.SUPPLYDEPOT.ordinal();
     static final int RUSH_TIME = 1000;
+    static final int HQ_TO_BEAVER_ST = 1000;
     static final int HQ_TO_MINERFACTORY_ST = 9000;
-    static final int HQ_TO_LAB_ST = 15000;
+    static final int HQ_TO_LAB_ST = 9000;
     static final int MINERFACTORY_TO_MINER_ST = 3000;
-    static final int LAB_TO_LAUNCHER_ST = 5000;
+    static final int LAB_TO_LAUNCHER_ST = 3000;
     
     // Build orders/compositions
     static final int[] START_ORDER = new int[RobotType.values().length];
@@ -23,13 +26,12 @@ public class RobotPlayer {
     static {
         START_ORDER[RobotType.BEAVER.ordinal()] = 3; 
         START_ORDER[RobotType.MINERFACTORY.ordinal()] = 2; 
-        START_ORDER[RobotType.MINER.ordinal()] = 10; 
         START_ORDER[RobotType.HELIPAD.ordinal()] = 1; 
         START_ORDER[RobotType.AEROSPACELAB.ordinal()] = 4; 
 
-        COMP_RATIO[RobotType.MINER.ordinal()] = 5; 
+        COMP_RATIO[RobotType.MINER.ordinal()] = 2; 
         COMP_RATIO[RobotType.AEROSPACELAB.ordinal()] = 1; 
-        COMP_RATIO[RobotType.LAUNCHER.ordinal()] = 5; 
+        COMP_RATIO[RobotType.SUPPLYDEPOT.ordinal()] = 2; 
     }
     
     // Message channels
@@ -46,6 +48,7 @@ public class RobotPlayer {
     static int producedRound;
     static MapLocation myHQ;
     static MapLocation enemyHQ;
+    static MapLocation frontier;
     
     // Round constants
     static int roundNum;
@@ -67,6 +70,7 @@ public class RobotPlayer {
             producedRound = rc.readBroadcast(ROUND_NUM);
             myHQ = rc.senseHQLocation();
             enemyHQ = rc.senseEnemyHQLocation();
+            frontier = myHQ.add(myHQ.directionTo(enemyHQ), 8);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -118,7 +122,10 @@ public class RobotPlayer {
 
     static void runHQ() throws Exception {
         for (RobotInfo r : rc.senseNearbyRobots(GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED, myTeam))
-            if (r.type == RobotType.MINERFACTORY && r.supplyLevel < HQ_TO_MINERFACTORY_ST && mySupply >= HQ_TO_MINERFACTORY_ST) {
+            if (r.type == RobotType.BEAVER && r.supplyLevel < HQ_TO_BEAVER_ST && mySupply >= HQ_TO_BEAVER_ST) {
+                rc.transferSupplies(HQ_TO_BEAVER_ST, r.location);
+                mySupply -= HQ_TO_BEAVER_ST;
+            } else if (r.type == RobotType.MINERFACTORY && r.supplyLevel < HQ_TO_MINERFACTORY_ST && mySupply >= HQ_TO_MINERFACTORY_ST) {
                 rc.transferSupplies(HQ_TO_MINERFACTORY_ST, r.location);
                 mySupply -= HQ_TO_MINERFACTORY_ST;
             } else if (r.type == RobotType.AEROSPACELAB && r.supplyLevel < HQ_TO_LAB_ST && mySupply >= HQ_TO_LAB_ST) {
@@ -137,22 +144,26 @@ public class RobotPlayer {
     }
 
     static void runBeaver() throws Exception {
+        int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
         int numMinerFactories = rc.readBroadcast(POP_COUNT + I_MINERFACTORY);
         int numHelipads = rc.readBroadcast(POP_COUNT + I_HELIPAD);
         int numLabs = rc.readBroadcast(POP_COUNT + I_LAB);
+        int numDepots = rc.readBroadcast(POP_COUNT + I_DEPOT);
         if (numMinerFactories < START_ORDER[I_MINERFACTORY])
             tryBuild(RobotType.MINERFACTORY, GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED);
         else if (numHelipads < START_ORDER[I_HELIPAD])
             tryBuild(RobotType.HELIPAD, GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED);
-        else if (numLabs < START_ORDER[I_LAB])
+        else if (numDepots < numLabs * COMP_RATIO[I_DEPOT] / COMP_RATIO[I_LAB])
+            tryBuild(RobotType.SUPPLYDEPOT);
+        else if (numLabs < START_ORDER[I_LAB] || numLabs < numMiners * COMP_RATIO[I_LAB] / COMP_RATIO[I_MINER])
             tryBuild(RobotType.AEROSPACELAB, GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED);
 
         if (rc.senseOre(myLoc) > 0 && rc.isCoreReady() && rc.canMine())
             rc.mine();
 
-        if (myLoc.distanceSquaredTo(myHQ) <= 35)
+        if (myLoc.distanceSquaredTo(myHQ) >= 80)
             tryWander(directionToInt(myLoc.directionTo(myHQ)));
-        else
+        else if (roundNum < 100 || roundNum % 10 == 0)
             tryRandomMove();
     }
 
@@ -177,7 +188,7 @@ public class RobotPlayer {
             }
         
         int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
-        if (numMiners < START_ORDER[I_MINER])
+        if (numMiners < MAX_MINERS)
             trySpawn(RobotType.MINER);
     }
 
@@ -198,7 +209,7 @@ public class RobotPlayer {
         else
         {
             if (roundNum < RUSH_TIME)
-                tryRandomMove();
+                tryMove(directionToInt(myLoc.directionTo(frontier)));
             else
                 tryMove(directionToInt(myLoc.directionTo(enemyHQ)));
         }
@@ -295,6 +306,8 @@ public class RobotPlayer {
             i++;
         if (i < 8) {
             rc.build(directions[i], type);
+        } else {
+            tryWander(directionToInt(myLoc.directionTo(myHQ)));
         }
     }
     
