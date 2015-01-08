@@ -88,13 +88,30 @@ public class RobotPlayer
 
     public static void run(RobotController tomatojuice)
     {
+        rc = tomatojuice;
+        myTeam = rc.getTeam();
+        enemyTeam = myTeam.opponent();
+        myType = rc.getType();
+        mySensors = myType.sensorRadiusSquared;
+        if (myType == RobotType.MISSILE)
+        {
+            myLoc = rc.getLocation();
+            while (true)
+            {
+                try
+                {
+                    runMissile();
+                }
+                catch (Exception e)
+                {
+                    e.printStackTrace();
+                }
+                rc.yield();
+            }
+        }
+
         try
         {
-            rc = tomatojuice;
-            myTeam = rc.getTeam();
-            enemyTeam = myTeam.opponent();
-            myType = rc.getType();
-            mySensors = myType.sensorRadiusSquared;
             myRange = myType.attackRadiusSquared;
             producedRound = rc.readBroadcast(ROUND_NUM);
             myHQ = rc.senseHQLocation();
@@ -178,13 +195,12 @@ public class RobotPlayer
                     runLauncher();
                 else if (myType == RobotType.MISSILE)
                     runMissile();
-
-                rc.yield();
             }
             catch (Exception e)
             {
                 e.printStackTrace();
             }
+            rc.yield();
         }
     }
 
@@ -247,15 +263,12 @@ public class RobotPlayer
         }
 
         for (Direction dir : directions)
-        {
-            MapLocation loc = myLoc.add(dir);
-            if (rc.senseOre(loc) > 0 && !isBadSpot(loc) && rc.canMove(dir))
+            if (rc.senseOre(myLoc.add(dir)) > 0 && !isBadDir(dir) && rc.canMove(dir))
             {
                 lastMoveDir = dir;
                 rc.move(dir);
                 return;
             }
-        }
         if (lastMoveDir == null)
             lastMoveDir = tryRandomMove();
         else
@@ -306,25 +319,17 @@ public class RobotPlayer
 
     static void runMissile() throws Exception
     {
-        if (rc.senseNearbyRobots(myRange, enemyTeam).length > 0 && rc.senseNearbyRobots(myRange, myTeam).length == 0)
+        RobotInfo[] enemies = rc.senseNearbyRobots(mySensors, enemyTeam);
+        if (enemies.length != 0)
         {
-            rc.explode();
+            tryMove(directionToInt(myLoc.directionTo(enemies[0].location)));
+            return;
         }
-        else
+        RobotInfo[] allies = rc.senseNearbyRobots(mySensors, myTeam);
+        if (allies.length != 0)
         {
-            RobotInfo[] enemies = rc.senseNearbyRobots(mySensors, enemyTeam);
-            if (enemies.length != 0)
-            {
-                tryMove(directionToInt(myLoc.directionTo(enemies[0].location)));
-                return;
-            }
-            RobotInfo[] allies = rc.senseNearbyRobots(mySensors, myTeam);
-            if (allies.length != 0)
-            {
-                tryMove(directionToInt(myLoc.directionTo(allies[0].location).opposite()));
-                return;
-            }
-            tryRandomMove();
+            tryMove(directionToInt(myLoc.directionTo(allies[0].location).opposite()));
+            return;
         }
     }
 
@@ -340,20 +345,22 @@ public class RobotPlayer
         }
     }
 
-    static Direction tryRandomMove() throws GameActionException
+    static Direction tryRandomMove() throws Exception
     {
         return tryWander((int) (Math.random() * 8));
     }
 
-    static Direction tryWander(int dirint) throws GameActionException
+    static Direction tryWander(int dirint) throws Exception
     {
         if (!rc.isCoreReady())
             return null;
         int offsetIndex = 0;
         int[] offsets =
         { 0, 1, -1, 2, -2, 3, -3, 4 };
-        while (offsetIndex < 8 && !rc.canMove(directions[(dirint + offsets[offsetIndex] + 8) % 8]))
-        {
+        while (offsetIndex < 8) {
+            Direction dir = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            if (rc.canMove(dir) && !isBadDir(dir))
+                break;
             offsetIndex++;
         }
         if (offsetIndex < 8)
@@ -367,15 +374,17 @@ public class RobotPlayer
 
     // This method will attempt to move in Direction d (or as close to it as
     // possible)
-    static Direction tryMove(int dirint) throws GameActionException
+    static Direction tryMove(int dirint) throws Exception
     {
         if (!rc.isCoreReady())
             return null;
         int offsetIndex = 0;
         int[] offsets =
         { 0, 1, -1, 2, -2 };
-        while (offsetIndex < 5 && !rc.canMove(directions[(dirint + offsets[offsetIndex] + 8) % 8]))
-        {
+        while (offsetIndex < 5) {
+            Direction dir = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            if (rc.canMove(dir) && (myType == RobotType.MISSILE || !isBadDir(dir)))
+                break;
             offsetIndex++;
         }
         if (offsetIndex < 5)
@@ -471,8 +480,9 @@ public class RobotPlayer
     static boolean[][] badSpot = new boolean[GameConstants.MAP_MAX_HEIGHT * 2][GameConstants.MAP_MAX_WIDTH * 2];
     static boolean[][] badSpotUsed = new boolean[GameConstants.MAP_MAX_HEIGHT * 2][GameConstants.MAP_MAX_WIDTH * 2];
 
-    static boolean isBadSpot(MapLocation target) throws Exception
+    static boolean isBadDir(Direction dir) throws Exception
     {
+        MapLocation target = myLoc.add(dir);
         int diffY = target.y - myHQ.y + GameConstants.MAP_MAX_HEIGHT;
         int diffX = target.x - myHQ.x + GameConstants.MAP_MAX_WIDTH;
         if (!badSpotUsed[diffY][diffX])
