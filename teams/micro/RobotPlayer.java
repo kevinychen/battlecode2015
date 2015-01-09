@@ -34,6 +34,7 @@ public class RobotPlayer
     static final int I_LAB = RobotType.AEROSPACELAB.ordinal();
     static final int I_DEPOT = RobotType.SUPPLYDEPOT.ordinal();
     static final int RUSH_TIME = 1000;
+    static final int MIN_ORE = 9;
 
     // Heuristic to see if we need more miners.
     // If during the last ORE_WINDOW turns, we've gathered more than
@@ -256,19 +257,27 @@ public class RobotPlayer
                 return;
             }
 
-        if (rc.senseOre(myLoc) > 0 && rc.canMine())
+        double currOre = rc.senseOre(myLoc);
+        if (currOre > MIN_ORE)
         {
             rc.mine();
             return;
         }
 
         for (Direction dir : directions)
-            if (rc.senseOre(myLoc.add(dir)) > 0 && !isBadDir(dir) && rc.canMove(dir))
+            if (rc.senseOre(myLoc.add(dir)) > 2 * currOre && !isBadDir(dir) && rc.canMove(dir))
             {
                 lastMoveDir = dir;
                 rc.move(dir);
                 return;
             }
+
+        if (currOre > 0)
+        {
+            rc.mine();
+            return;
+        }
+
         if (lastMoveDir == null)
             lastMoveDir = tryRandomMove();
         else
