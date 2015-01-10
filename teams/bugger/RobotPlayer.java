@@ -1,20 +1,69 @@
 package bugger;
 
 import battlecode.common.*;
-
 import java.util.*;
 
-public class RobotPlayer {
-    static final Direction[] directions = {Direction.NORTH, Direction.NORTH_EAST, Direction.EAST, Direction.SOUTH_EAST, Direction.SOUTH, Direction.SOUTH_WEST, Direction.WEST, Direction.NORTH_WEST};
-    static final int MAX_BEAVERS = 10;
-    static final int MAX_LABS = 2;
+public class RobotPlayer
+{
+    static final Direction[] directions =
+    { Direction.NORTH, Direction.NORTH_EAST, Direction.EAST, Direction.SOUTH_EAST, Direction.SOUTH,
+            Direction.SOUTH_WEST, Direction.WEST, Direction.NORTH_WEST };
+    static final RobotType[] BROADCAST_TYPES =
+    { RobotType.BEAVER, RobotType.MINER, RobotType.MINERFACTORY, RobotType.HELIPAD, RobotType.SUPPLYDEPOT,
+            RobotType.AEROSPACELAB, RobotType.LAUNCHER };
+    static final boolean[] IS_MAIN_BUILDING = new boolean[RobotType.values().length];
+    static final int[] BASE_SUPPLY = new int[RobotType.values().length];
+    static final int BEAVER_SUPPLY = 1000;
+    static final int BUILDING_SUPPLY = 15000;
+    static
+    {
+        IS_MAIN_BUILDING[RobotType.HQ.ordinal()] = true;
+        IS_MAIN_BUILDING[RobotType.MINERFACTORY.ordinal()] = true;
+        IS_MAIN_BUILDING[RobotType.HELIPAD.ordinal()] = true;
+        IS_MAIN_BUILDING[RobotType.AEROSPACELAB.ordinal()] = true;
+
+        BASE_SUPPLY[RobotType.BEAVER.ordinal()] = BEAVER_SUPPLY;
+        BASE_SUPPLY[RobotType.MINER.ordinal()] = 5000;
+        BASE_SUPPLY[RobotType.LAUNCHER.ordinal()] = 2500;
+    }
+    static final int MAX_MINERS = 40;
+    static final int I_BEAVER = RobotType.BEAVER.ordinal();
+    static final int I_MINER = RobotType.MINER.ordinal();
+    static final int I_MINERFACTORY = RobotType.MINERFACTORY.ordinal();
+    static final int I_HELIPAD = RobotType.HELIPAD.ordinal();
+    static final int I_LAB = RobotType.AEROSPACELAB.ordinal();
+    static final int I_DEPOT = RobotType.SUPPLYDEPOT.ordinal();
     static final int RUSH_TIME = 1000;
-    
+    static final int MIN_ORE = 9;
+    static final int LAUNCHER_RANGE = 36;
+
+    // Heuristic to see if we need more miners.
+    // If during the last ORE_WINDOW turns, we've gathered more than
+    // MINE_SATURATION ore per turn on average, then produce more miners.
+    // Unless we have more than ORE_SATURATION ore in the bank, then DON'T
+    // PRODUCE more miners!
+    static final int ORE_WINDOW = 10;
+    static final double MINE_SATURATION = 0.7;
+    static final int ORE_SATURATION = 700;
+
+    // Build orders/compositions
+    static final int[] START_ORDER = new int[RobotType.values().length];
+    static final int[] COMP_RATIO = new int[RobotType.values().length];
+    static
+    {
+        START_ORDER[RobotType.BEAVER.ordinal()] = 3;
+        START_ORDER[RobotType.MINERFACTORY.ordinal()] = 2;
+        START_ORDER[RobotType.HELIPAD.ordinal()] = 1;
+        START_ORDER[RobotType.AEROSPACELAB.ordinal()] = 4;
+
+        COMP_RATIO[RobotType.MINER.ordinal()] = 2;
+        COMP_RATIO[RobotType.AEROSPACELAB.ordinal()] = 1;
+        COMP_RATIO[RobotType.SUPPLYDEPOT.ordinal()] = 2;
+    }
+
     // Message channels
     static final int ROUND_NUM = 0;
-    static final int NUM_BEAVERS = 1;
-    static final int NUM_HELIPADS = 2;
-    static final int NUM_LABS = 3;
+    static final int POP_COUNT = 1;  // to 31
 
     // Game constants
     static RobotController rc;
@@ -24,219 +73,437 @@ public class RobotPlayer {
     static int mySensors;
     static int myRange;
     static int producedRound;
+    static MapLocation myHQ;
     static MapLocation enemyHQ;
-    
+    static MapLocation frontier;
+
     // Round constants
     static int roundNum;
     static MapLocation myLoc;
+    static double mySupply;
     static double teamOre;
-    static int numBeavers;
-    static int numHelipads;
-    static int numLabs;
-    
-    public static void run(RobotController tomatojuice) {
-        try {
-            rc = tomatojuice;
-            myTeam = rc.getTeam();
-            enemyTeam = myTeam.opponent();
-            myType = rc.getType();
-            mySensors = myType.sensorRadiusSquared;
+    static MapLocation[] enemyTowers;
+
+    // Other
+    static Direction lastMoveDir;
+    static double prevTeamOre;
+    static double[] prevOreGained = new double[ORE_WINDOW];
+
+    public static void run(RobotController tomatojuice)
+    {
+        rc = tomatojuice;
+        myTeam = rc.getTeam();
+        enemyTeam = myTeam.opponent();
+        myType = rc.getType();
+        mySensors = myType.sensorRadiusSquared;
+        if (myType == RobotType.MISSILE)
+        {
+            while (true)
+            {
+                try
+                {
+                    roundNum = Clock.getRoundNum();
+                    myLoc = rc.getLocation();
+
+                    runMissile();
+                }
+                catch (Exception e)
+                {
+                    e.printStackTrace();
+                }
+
+                if (Clock.getRoundNum() != roundNum)
+                    System.out.println("MISSILE USED TOO MUCH BYTECODE");
+                rc.yield();
+            }
+        }
+
+        try
+        {
             myRange = myType.attackRadiusSquared;
             producedRound = rc.readBroadcast(ROUND_NUM);
+            myHQ = rc.senseHQLocation();
             enemyHQ = rc.senseEnemyHQLocation();
-        } catch (Exception e) {
+            frontier = myHQ.add(myHQ.directionTo(enemyHQ), 8);
+        }
+        catch (Exception e)
+        {
             e.printStackTrace();
         }
 
-        while(true) {
-            try {
-                rc.setIndicatorString(0, "I am a " + myType);
-
+        while (true)
+        {
+            try
+            {
+                roundNum = Clock.getRoundNum();
                 myLoc = rc.getLocation();
+                mySupply = rc.getSupplyLevel();
                 teamOre = rc.getTeamOre();
+                enemyTowers = rc.senseEnemyTowerLocations();
 
-                if (myType == RobotType.HQ) {
-                    roundNum++;
-                    rc.broadcast(ROUND_NUM, roundNum);
-
-                    numBeavers = 0;
-                    numHelipads = 0;
-                    numLabs = 0;
+                if (myType == RobotType.HQ)
+                {
+                    int[] popCounts = new int[RobotType.values().length];
                     for (RobotInfo r : rc.senseNearbyRobots(999999, myTeam))
                     {
                         RobotType type = r.type;
-                        if (type == RobotType.BEAVER) {
-                            numBeavers++;
-                        } else if (type == RobotType.HELIPAD) {
-                            numHelipads++;
-                        } else if (type == RobotType.AEROSPACELAB) {
-                            numLabs++;
+                        popCounts[type.ordinal()]++;
+                    }
+                    for (RobotType type : BROADCAST_TYPES)
+                        rc.broadcast(POP_COUNT + type.ordinal(), popCounts[type.ordinal()]);
+
+                    for (RobotInfo r : rc.senseNearbyRobots(GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED, myTeam))
+                        if (IS_MAIN_BUILDING[r.type.ordinal()] && r.supplyLevel < BUILDING_SUPPLY
+                                && mySupply >= BUILDING_SUPPLY) {
+                            rc.transferSupplies(BUILDING_SUPPLY, r.location);
+                            mySupply -= BUILDING_SUPPLY;
+                        } else if (r.type == RobotType.BEAVER && r.supplyLevel < 0.5 * BEAVER_SUPPLY && mySupply >= BEAVER_SUPPLY) {
+                            rc.transferSupplies(BEAVER_SUPPLY, r.location);
+                            mySupply -= BEAVER_SUPPLY;
+                        }
+                }
+                else
+                {
+                    if (myType.isBuilding) {
+                        for (RobotInfo r : rc.senseNearbyRobots(GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED, myTeam)) {
+                            if (!r.type.isBuilding) {
+                                int goal = BASE_SUPPLY[r.type.ordinal()];
+                                if (r.supplyLevel < 0.5 * goal && mySupply >= goal) {
+                                    rc.transferSupplies(goal, r.location);
+                                    break;
+                                }
+                            } else if (IS_MAIN_BUILDING[r.type.ordinal()] && r.supplyLevel < BUILDING_SUPPLY
+                                    && mySupply >= BUILDING_SUPPLY) {
+                                Direction dir1 = myHQ.directionTo(myLoc), dir2 = myLoc.directionTo(r.location);
+                                if (dir1 == dir2.rotateLeft() || dir1 == dir2 || dir1 == dir2.rotateRight()) {
+                                    rc.transferSupplies(BUILDING_SUPPLY, r.location);
+                                    break;
+                                }
+                            }
                         }
                     }
-                    rc.broadcast(NUM_BEAVERS, numBeavers);
-                    rc.broadcast(NUM_HELIPADS, numHelipads);
-                    rc.broadcast(NUM_LABS, numLabs);
                 }
-                else {
-                    roundNum = rc.readBroadcast(ROUND_NUM);
-                    numBeavers = rc.readBroadcast(NUM_BEAVERS);
-                    numHelipads = rc.readBroadcast(NUM_HELIPADS);
-                    numLabs = rc.readBroadcast(NUM_LABS);
-                }
-                
+
                 if (myType == RobotType.HQ)
                     runHQ();
                 else if (myType == RobotType.TOWER)
                     runTower();
                 else if (myType == RobotType.BEAVER)
                     runBeaver();
+                else if (myType == RobotType.MINER)
+                    runMiner();
+                else if (myType == RobotType.MINERFACTORY)
+                    runMinerFactory();
                 else if (myType == RobotType.AEROSPACELAB)
                     runLab();
                 else if (myType == RobotType.LAUNCHER)
                     runLauncher();
                 else if (myType == RobotType.MISSILE)
                     runMissile();
-                
-                rc.yield();
-            } catch (Exception e) {
+            }
+            catch (Exception e)
+            {
                 e.printStackTrace();
             }
+
+            if (Clock.getRoundNum() != roundNum)
+                System.out.println("USED TOO MUCH BYTECODE");
+            rc.yield();
         }
     }
 
-    static void runHQ() throws Exception {
-        if (numBeavers < MAX_BEAVERS)
+    static void runHQ() throws Exception
+    {
+        int numBeavers = rc.readBroadcast(POP_COUNT + I_BEAVER);
+        if (numBeavers < START_ORDER[I_BEAVER])
             trySpawn(RobotType.BEAVER);
         attackSomething();
     }
 
-    static void runTower() throws Exception {
+    static void runTower() throws Exception
+    {
         attackSomething();
     }
 
-    static void runBeaver() throws Exception {
-        if (numHelipads == 0)
+    static void runBeaver() throws Exception
+    {
+        int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
+        int numMinerFactories = rc.readBroadcast(POP_COUNT + I_MINERFACTORY);
+        int numHelipads = rc.readBroadcast(POP_COUNT + I_HELIPAD);
+        int numLabs = rc.readBroadcast(POP_COUNT + I_LAB);
+        int numDepots = rc.readBroadcast(POP_COUNT + I_DEPOT);
+        if (numMinerFactories < START_ORDER[I_MINERFACTORY])
+            tryBuild(RobotType.MINERFACTORY);
+        else if (numHelipads < START_ORDER[I_HELIPAD])
             tryBuild(RobotType.HELIPAD);
-        if (numLabs < MAX_LABS)
+        else if (numDepots < numLabs * COMP_RATIO[I_DEPOT] / COMP_RATIO[I_LAB])
+            tryBuild(RobotType.SUPPLYDEPOT);
+        else if (numLabs < START_ORDER[I_LAB] || numLabs < numMiners * COMP_RATIO[I_LAB] / COMP_RATIO[I_MINER] || teamOre > ORE_SATURATION)
             tryBuild(RobotType.AEROSPACELAB);
+
         if (rc.senseOre(myLoc) > 0 && rc.isCoreReady() && rc.canMine())
             rc.mine();
-        tryRandomMove();
+
+        if (myLoc.distanceSquaredTo(myHQ) >= 80)
+            tryWander(directionToInt(myLoc.directionTo(myHQ)));
+        else if (roundNum < 100 || roundNum % 10 == 0)
+            tryRandomMove();
     }
 
-    static void runLab() throws Exception {
+    static void runMiner() throws Exception
+    {
+        if (!rc.isCoreReady())
+            return;
+
+        RobotInfo[] enemies = rc.senseNearbyRobots(35, enemyTeam);
+        for (RobotInfo r : enemies)
+            if (r.type.canAttack() && r.type != RobotType.BEAVER && r.type != RobotType.MINER)
+            {
+                lastMoveDir = enemies[0].location.directionTo(myLoc);
+                tryMove(directionToInt(lastMoveDir));
+                return;
+            }
+
+        double currOre = rc.senseOre(myLoc);
+        if (currOre > MIN_ORE)
+        {
+            rc.mine();
+            return;
+        }
+
+        for (Direction dir : directions)
+            if (rc.senseOre(myLoc.add(dir)) > 2 * currOre && !isBadDir(dir) && rc.canMove(dir))
+            {
+                lastMoveDir = dir;
+                rc.move(dir);
+                return;
+            }
+
+        if (currOre > 0)
+        {
+            rc.mine();
+            return;
+        }
+
+        if (lastMoveDir == null)
+            lastMoveDir = tryRandomMove();
+        else
+        {
+            Direction dir = tryWander(directionToInt(lastMoveDir));
+            if (dir != null)
+                lastMoveDir = dir;
+        }
+    }
+
+    static void runMinerFactory() throws Exception
+    {
+        if (teamOre < ORE_SATURATION)
+        {
+            int oreGained = 0, turnsOreGained = 0;
+            for (int i = 0; i < ORE_WINDOW; i++)
+                if (prevOreGained[i] > 0)
+                {
+                    oreGained += prevOreGained[i];
+                    turnsOreGained++;
+                }
+            int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
+            if (oreGained >= numMiners * MINE_SATURATION * turnsOreGained)
+                trySpawn(RobotType.MINER);
+        }
+        prevOreGained[roundNum % ORE_WINDOW] = (teamOre > prevTeamOre ? teamOre - prevTeamOre : 0);
+        prevTeamOre = teamOre;
+    }
+
+    static void runLab() throws Exception
+    {
         trySpawn(RobotType.LAUNCHER);
     }
 
-    static void runLauncher() throws Exception {
-        RobotInfo[] enemies = rc.senseNearbyRobots(36, enemyTeam);
+    static void runLauncher() throws Exception
+    {
+        RobotInfo[] enemies = rc.senseNearbyRobots(LAUNCHER_RANGE, enemyTeam);
         if (enemies.length > 0)
+        {
             tryLaunch(directionToInt(myLoc.directionTo(enemies[0].location)));
-        else
+            return;
+        }
+        
+        for (MapLocation enemyTower : enemyTowers)
+            if (myLoc.distanceSquaredTo(enemyTower) < LAUNCHER_RANGE)
+            {
+                tryLaunch(directionToInt(myLoc.directionTo(enemyTower)));
+                return;
+            }
+                
+        if (rc.isCoreReady())
         {
             if (roundNum < RUSH_TIME)
-                tryRandomMove();
-            else if (rc.isCoreReady()) {
-                if (Bugger.dest == null)
-                    Bugger.reset(enemyHQ);
-                Direction dir = Bugger.getDir();
-                if (dir != null)
-                    rc.move(dir);
-            }
+                Bugger.set(frontier);
+            else
+                Bugger.set(enemyHQ);
+            Direction dir = Bugger.getDir();
+            if (dir != null)
+                rc.move(dir);
         }
     }
 
-    static void runMissile() throws Exception {
-        if (rc.senseNearbyRobots(myRange, enemyTeam).length > 0 &&
-                rc.senseNearbyRobots(myRange, myTeam).length == 0)
+    static void runMissile() throws Exception
+    {
+        RobotInfo[] enemies = rc.senseNearbyRobots(mySensors, enemyTeam);
+        if (enemies.length != 0)
         {
-            rc.explode();
+            tryMissileMove(myLoc.directionTo(enemies[0].location));
+            return;
         }
-        else
+        RobotInfo[] allies = rc.senseNearbyRobots(mySensors, myTeam);
+        if (allies.length != 0)
         {
-            RobotInfo[] enemies = rc.senseNearbyRobots(mySensors, enemyTeam);
-            if (enemies.length != 0)
-            {
-                tryMove(directionToInt(myLoc.directionTo(enemies[0].location)));
-                return;
-            }
-            RobotInfo[] allies = rc.senseNearbyRobots(mySensors, myTeam);
-            if (allies.length != 0)
-            {
-                tryMove(directionToInt(myLoc.directionTo(allies[0].location).opposite()));
-                return;
-            }
-            tryRandomMove();
+            tryMissileMove(allies[0].location.directionTo(myLoc));
+            return;
         }
     }
 
     // This method will attack an enemy in sight, if there is one
-    static void attackSomething() throws GameActionException {
+    static void attackSomething() throws GameActionException
+    {
         if (!rc.isWeaponReady())
             return;
         RobotInfo[] enemies = rc.senseNearbyRobots(myRange, enemyTeam);
-        if (enemies.length > 0) {
+        if (enemies.length > 0)
+        {
             rc.attackLocation(enemies[0].location);
         }
     }
-    
-    static void tryRandomMove() throws GameActionException {
-        tryMove((int) (Math.random() * 8));
+
+    static Direction tryRandomMove() throws Exception
+    {
+        return tryWander((int) (Math.random() * 8));
     }
-    
-    // This method will attempt to move in Direction d (or as close to it as possible)
-    static void tryMove(int dirint) throws GameActionException {
+
+    static Direction tryWander(int dirint) throws Exception
+    {
         if (!rc.isCoreReady())
-            return;
+            return null;
         int offsetIndex = 0;
-        int[] offsets = {0,1,-1,2,-2};
-        while (offsetIndex < 5 && !rc.canMove(directions[(dirint+offsets[offsetIndex]+8)%8])) {
+        int[] offsets =
+        { 0, 1, -1, 2, -2, 3, -3, 4 };
+        while (offsetIndex < 8) {
+            Direction dir = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            if (rc.canMove(dir) && !isBadDir(dir))
+                break;
             offsetIndex++;
         }
-        if (offsetIndex < 5) {
-            rc.move(directions[(dirint+offsets[offsetIndex]+8)%8]);
+        if (offsetIndex < 8)
+        {
+            Direction res = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            rc.move(res);
+            return res;
         }
+        return null;
+    }
+
+    // This method will attempt to move in Direction d (or as close to it as
+    // possible)
+    static Direction tryMove(int dirint) throws Exception
+    {
+        if (!rc.isCoreReady())
+            return null;
+        int offsetIndex = 0;
+        int[] offsets =
+        { 0, 1, -1, 2, -2 };
+        while (offsetIndex < 5) {
+            Direction dir = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            if (rc.canMove(dir) && (myType == RobotType.MISSILE || !isBadDir(dir)))
+                break;
+            offsetIndex++;
+        }
+        if (offsetIndex < 5)
+        {
+            Direction res = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            rc.move(res);
+            return res;
+        }
+        return null;
     }
     
-    // This method will attempt to spawn in the given direction (or as close to it as possible)
-    static void trySpawn(RobotType type) throws GameActionException {
+    // Optimized for missiles
+    static void tryMissileMove(Direction dir) throws Exception
+    {
+        if (!rc.isCoreReady())
+            return;
+        Direction left, right, left2, right2;
+        if (rc.canMove(dir))
+            rc.move(dir);
+        else if (rc.canMove(left = dir.rotateLeft()))
+            rc.move(left);
+        else if (rc.canMove(right = dir.rotateRight()))
+            rc.move(right);
+        else if (rc.canMove(left2 = left.rotateLeft()))
+            rc.move(left2);
+        else if (rc.canMove(right2 = right.rotateRight()))
+            rc.move(right2);
+    }
+
+    // This method will attempt to spawn in the given direction (or as close to
+    // it as possible)
+    static void trySpawn(RobotType type) throws GameActionException
+    {
         if (!rc.isCoreReady())
             return;
         int i = 0;
         while (i < 8 && !rc.canSpawn(directions[i], type))
             i++;
-        if (i < 8) {
+        if (i < 8)
+        {
             rc.spawn(directions[i], type);
         }
     }
-    
-    // This method will attempt to build in the given direction (or as close to it as possible)
-    static void tryBuild(RobotType type) throws GameActionException {
+
+    static void tryBuild(RobotType type) throws Exception
+    {
         if (!rc.isCoreReady() || teamOre < type.oreCost)
             return;
         int i = 0;
-        while (i < 8 && !rc.canMove(directions[i]))
+        while (i < 8 && (!rc.canMove(directions[i]) || !tryBuildHere(type, myLoc.add(directions[i]))))
             i++;
-        if (i < 8) {
+        if (i < 8)
+        {
             rc.build(directions[i], type);
         }
     }
-    
-    static void tryLaunch(int dirint) throws GameActionException {
+
+    static boolean tryBuildHere(RobotType type, MapLocation loc)
+    {
+        for (RobotInfo r : rc.senseNearbyRobots(loc, 1, myTeam))
+            if (r.type.isBuilding)
+                return false;
+        for (RobotInfo r : rc.senseNearbyRobots(loc, 13, myTeam))
+            if (IS_MAIN_BUILDING[r.type.ordinal()])
+                return true;
+        return false;
+    }
+
+    static void tryLaunch(int dirint) throws GameActionException
+    {
         if (!rc.isCoreReady())
             return;
         int offsetIndex = 0;
-        int[] offsets = {0,1,-1,2,-2};
-        while (offsetIndex < 5 && !rc.canLaunch(directions[(dirint+offsets[offsetIndex]+8)%8])) {
+        int[] offsets =
+        { 0, 1, -1, 2, -2 };
+        while (offsetIndex < 5 && !rc.canLaunch(directions[(dirint + offsets[offsetIndex] + 8) % 8]))
+        {
             offsetIndex++;
         }
-        if (offsetIndex < 5) {
-            rc.launchMissile(directions[(dirint+offsets[offsetIndex]+8)%8]);
+        if (offsetIndex < 5)
+        {
+            rc.launchMissile(directions[(dirint + offsets[offsetIndex] + 8) % 8]);
         }
     }
 
-    static int directionToInt(Direction d) {
-        switch(d) {
+    static int directionToInt(Direction d)
+    {
+        switch (d)
+        {
             case NORTH:
                 return 0;
             case NORTH_EAST:
@@ -257,7 +524,25 @@ public class RobotPlayer {
                 return -1;
         }
     }
-    
+
+    static boolean isBadDir(Direction dir) throws Exception
+    {
+        MapLocation target = myLoc.add(dir);
+        if (enemyHQ.distanceSquaredTo(target) <= 35)
+            return true;
+
+        for (MapLocation loc : enemyTowers)
+            if (loc.distanceSquaredTo(target) <= 24)
+                return true;
+
+        return false;
+    }
+
+    static double mine(double current)
+    {
+        return Math.min(3, current / 4);
+    }
+
     static class Bugger {
         static final int FORWARD = 0;
         static final int BUG_LEFT = 1;  // follow left wall
@@ -273,10 +558,13 @@ public class RobotPlayer {
         static int hitWallDirIndex;
         static MapLocation hitWallLoc;
         
-        static void reset(MapLocation dest) {
-            Bugger.dest = dest;
-            state = FORWARD;
-            lastBugState = BUG_LEFT;
+        static void set(MapLocation dest) {
+            if (!dest.equals(Bugger.dest))
+            {
+                Bugger.dest = dest;
+                state = FORWARD;
+                lastBugState = BUG_LEFT;
+            }
         }
         
         static Direction getDir() throws Exception {
