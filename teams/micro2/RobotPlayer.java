@@ -35,6 +35,7 @@ public class RobotPlayer
     static final int I_DEPOT = RobotType.SUPPLYDEPOT.ordinal();
     static final int RUSH_TIME = 1000;
     static final int MIN_ORE = 9;
+    static final int LAUNCHER_RANGE = 36;
 
     // Heuristic to see if we need more miners.
     // If during the last ORE_WINDOW turns, we've gathered more than
@@ -62,7 +63,7 @@ public class RobotPlayer
 
     // Message channels
     static final int ROUND_NUM = 0;
-    static final int POP_COUNT = 1;
+    static final int POP_COUNT = 1;  // to 31
 
     // Game constants
     static RobotController rc;
@@ -81,6 +82,7 @@ public class RobotPlayer
     static MapLocation myLoc;
     static double mySupply;
     static double teamOre;
+    static MapLocation[] enemyTowers;
 
     // Other
     static Direction lastMoveDir;
@@ -96,17 +98,22 @@ public class RobotPlayer
         mySensors = myType.sensorRadiusSquared;
         if (myType == RobotType.MISSILE)
         {
-            myLoc = rc.getLocation();
             while (true)
             {
                 try
                 {
+                    roundNum = Clock.getRoundNum();
+                    myLoc = rc.getLocation();
+
                     runMissile();
                 }
                 catch (Exception e)
                 {
                     e.printStackTrace();
                 }
+
+                if (Clock.getRoundNum() != roundNum)
+                    System.out.println("MISSILE USED TOO MUCH BYTECODE");
                 rc.yield();
             }
         }
@@ -128,15 +135,14 @@ public class RobotPlayer
         {
             try
             {
+                roundNum = Clock.getRoundNum();
                 myLoc = rc.getLocation();
                 mySupply = rc.getSupplyLevel();
                 teamOre = rc.getTeamOre();
+                enemyTowers = rc.senseEnemyTowerLocations();
 
                 if (myType == RobotType.HQ)
                 {
-                    roundNum++;
-                    rc.broadcast(ROUND_NUM, roundNum);
-
                     int[] popCounts = new int[RobotType.values().length];
                     for (RobotInfo r : rc.senseNearbyRobots(999999, myTeam))
                     {
@@ -158,8 +164,6 @@ public class RobotPlayer
                 }
                 else
                 {
-                    roundNum = rc.readBroadcast(ROUND_NUM);
-
                     if (myType.isBuilding) {
                         for (RobotInfo r : rc.senseNearbyRobots(GameConstants.SUPPLY_TRANSFER_RADIUS_SQUARED, myTeam)) {
                             if (!r.type.isBuilding) {
@@ -201,6 +205,9 @@ public class RobotPlayer
             {
                 e.printStackTrace();
             }
+
+            if (Clock.getRoundNum() != roundNum)
+                System.out.println("USED TOO MUCH BYTECODE");
             rc.yield();
         }
     }
@@ -314,16 +321,24 @@ public class RobotPlayer
 
     static void runLauncher() throws Exception
     {
-        RobotInfo[] enemies = rc.senseNearbyRobots(36, enemyTeam);
+        RobotInfo[] enemies = rc.senseNearbyRobots(LAUNCHER_RANGE, enemyTeam);
         if (enemies.length > 0)
-            tryLaunch(directionToInt(myLoc.directionTo(enemies[0].location)));
-        else
         {
-            if (roundNum < RUSH_TIME)
-                tryMove(directionToInt(myLoc.directionTo(frontier)));
-            else
-                tryMove(directionToInt(myLoc.directionTo(enemyHQ)));
+            tryLaunch(directionToInt(myLoc.directionTo(enemies[0].location)));
+            return;
         }
+        
+        for (MapLocation enemyTower : enemyTowers)
+            if (myLoc.distanceSquaredTo(enemyTower) < LAUNCHER_RANGE)
+            {
+                tryLaunch(directionToInt(myLoc.directionTo(enemyTower)));
+                return;
+            }
+                
+        if (roundNum < RUSH_TIME)
+            tryMove(directionToInt(myLoc.directionTo(frontier)));
+        else
+            tryMove(directionToInt(myLoc.directionTo(enemyHQ)));
     }
 
     static void runMissile() throws Exception
@@ -331,13 +346,13 @@ public class RobotPlayer
         RobotInfo[] enemies = rc.senseNearbyRobots(mySensors, enemyTeam);
         if (enemies.length != 0)
         {
-            tryMove(directionToInt(myLoc.directionTo(enemies[0].location)));
+            tryMissileMove(myLoc.directionTo(enemies[0].location));
             return;
         }
         RobotInfo[] allies = rc.senseNearbyRobots(mySensors, myTeam);
         if (allies.length != 0)
         {
-            tryMove(directionToInt(myLoc.directionTo(allies[0].location).opposite()));
+            tryMissileMove(allies[0].location.directionTo(myLoc));
             return;
         }
     }
@@ -403,6 +418,24 @@ public class RobotPlayer
             return res;
         }
         return null;
+    }
+    
+    // Optimized for missiles
+    static void tryMissileMove(Direction dir) throws Exception
+    {
+        if (!rc.isCoreReady())
+            return;
+        Direction left, right, left2, right2;
+        if (rc.canMove(dir))
+            rc.move(dir);
+        else if (rc.canMove(left = dir.rotateLeft()))
+            rc.move(left);
+        else if (rc.canMove(right = dir.rotateRight()))
+            rc.move(right);
+        else if (rc.canMove(left2 = left.rotateLeft()))
+            rc.move(left2);
+        else if (rc.canMove(right2 = right.rotateRight()))
+            rc.move(right2);
     }
 
     // This method will attempt to spawn in the given direction (or as close to
@@ -486,25 +519,17 @@ public class RobotPlayer
         }
     }
 
-    static boolean[][] badSpot = new boolean[GameConstants.MAP_MAX_HEIGHT * 2][GameConstants.MAP_MAX_WIDTH * 2];
-    static boolean[][] badSpotUsed = new boolean[GameConstants.MAP_MAX_HEIGHT * 2][GameConstants.MAP_MAX_WIDTH * 2];
-
     static boolean isBadDir(Direction dir) throws Exception
     {
         MapLocation target = myLoc.add(dir);
-        int diffY = target.y - myHQ.y + GameConstants.MAP_MAX_HEIGHT;
-        int diffX = target.x - myHQ.x + GameConstants.MAP_MAX_WIDTH;
-        if (!badSpotUsed[diffY][diffX])
-        {
-            if (enemyHQ.distanceSquaredTo(target) <= 35)
-                badSpot[diffY][diffX] = true;
-            else
-                for (MapLocation loc : rc.senseEnemyTowerLocations())
-                    if (loc.distanceSquaredTo(target) <= 24)
-                        badSpot[diffY][diffX] = true;
-            badSpotUsed[diffY][diffX] = true;
-        }
-        return badSpot[diffY][diffX];
+        if (enemyHQ.distanceSquaredTo(target) <= 35)
+            return true;
+
+        for (MapLocation loc : enemyTowers)
+            if (loc.distanceSquaredTo(target) <= 24)
+                return true;
+
+        return false;
     }
 
     static double mine(double current)
