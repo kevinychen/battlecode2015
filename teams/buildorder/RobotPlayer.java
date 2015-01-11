@@ -391,29 +391,66 @@ public class RobotPlayer
     
     static int patrolIndex = -1;  // 0-8, or 9 for wanderer
     static MapLocation patrolSpot;
+    static double supplyRefuel;
     static void runDrone() throws Exception
     {
-        RobotInfo[] closeEnemies = rc.senseNearbyRobots(myType.attackRadiusSquared, enemyTeam);
-        if (closeEnemies.length > 0 && rc.isWeaponReady())
-            rc.attackLocation(closeEnemies[0].location);
+        attackSomething();
+
+        RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
+        for (RobotInfo r : enemies)
+        {
+            if (r.type == RobotType.LAUNCHER || r.type == RobotType.MISSILE)
+            {
+                tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
+                return;
+            }
+            else
+            {
+                int dist = myLoc.distanceSquaredTo(r.location);
+                if (r.type == RobotType.BASHER && dist <= 8 ||
+                        r.type != RobotType.DRONE && dist <= r.type.attackRadiusSquared)
+                {
+                    tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
+                    return;
+                }
+            }
+        }
+        
+        // If there is a drone out of range, stay put so you get the first attack.
+        for (RobotInfo r : enemies)
+            if (r.type == RobotType.DRONE)
+            {
+                if (myLoc.distanceSquaredTo(r.location) <= myRange)
+                    tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
+                else if (r.weaponDelay > 1)
+                    tryValidMove(myLoc.directionTo(r.location), SAFE_CLAUSE);
+                else if (r.weaponDelay <= 1)
+                    return;
+            }
+        
+        RobotInfo[] closeEnemies = rc.senseNearbyRobots(8, enemyTeam);
         for (RobotInfo r : closeEnemies)
-            if (!r.type.isBuilding && r.type != RobotType.BEAVER && r.type != RobotType.MINER)
+            if (r.type == RobotType.SOLDIER || r.type == RobotType.BASHER || r.type == RobotType.TANK)
             {
                 tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
                 break;
             }
 
-        RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
-        for (RobotInfo r : enemies)
-            if (r.type == RobotType.LAUNCHER || r.type == RobotType.MISSILE)
-            {
-                tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
-                break;
-            }
-        
         if (rc.readBroadcast(DEFEND_CALL) != 0)
         {
             tryValidMove(myLoc.directionTo(myHQ), SAFE_CLAUSE);
+            return;
+        }
+        
+        // Low supply, go back to HQ
+        if (supplyRefuel > 0 || myLoc.distanceSquaredTo(myHQ) + 100 >= mySupply / myType.supplyUpkeep * mySupply / myType.supplyUpkeep)
+        {
+            rc.setIndicatorString(2, "refuel to " + supplyRefuel);
+            if (supplyRefuel == 0)
+                supplyRefuel = mySupply;
+            tryValidMove(myLoc.directionTo(myHQ), SAFE_CLAUSE);
+            if (mySupply > supplyRefuel)
+                supplyRefuel = 0;
             return;
         }
 
@@ -424,12 +461,15 @@ public class RobotPlayer
             return;
         }
         
-        if (patrolIndex == -1)
+        if (patrolIndex == -1 || (patrolSpot != null && rc.senseTerrainTile(patrolSpot) == TerrainTile.OFF_MAP))
         {
+            if (patrolIndex != -1)
+                rc.broadcast(PATROL_DRONES + patrolIndex, -1);
+            patrolIndex = -1;
             for (int i = 0; i < 8; i++)
             {
                 int droneID = rc.readBroadcast(PATROL_DRONES + i);
-                if (droneID == 0 || !rc.canSenseRobot(droneID))  // not filled, or dead
+                if (droneID == 0 || (droneID > 0 && !rc.canSenseRobot(droneID)))  // not filled, or dead
                 {
                     patrolIndex = i;
                     patrolSpot = myHQ.add(directions[i], 6);
@@ -438,7 +478,10 @@ public class RobotPlayer
                 }
             }
             if (patrolIndex == -1)
+            {
                 patrolIndex = 9;
+                patrolSpot = null;
+            }
         }
         
         if (patrolIndex == 9)
