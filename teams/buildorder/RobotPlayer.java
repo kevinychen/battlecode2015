@@ -206,8 +206,9 @@ public class RobotPlayer
                         rc.broadcast(ENEMY_ECON_LOC, 0);
                     }
 
-                    if (rc.senseNearbyRobots(myLoc, 100, enemyTeam).length > 0)
-                        rc.broadcast(DEFEND_CALL, 1);
+                    RobotInfo[] homeEnemies = rc.senseNearbyRobots(myLoc, 100, enemyTeam);
+                    if (homeEnemies.length > 0)
+                        rc.broadcast(DEFEND_CALL, mapLocationToInt(homeEnemies[0].location));
                     else
                         rc.broadcast(DEFEND_CALL, 0);
 
@@ -436,9 +437,10 @@ public class RobotPlayer
                 break;
             }
 
-        if (rc.readBroadcast(DEFEND_CALL) != 0)
+        int defendLocInt = rc.readBroadcast(DEFEND_CALL);
+        if (defendLocInt != 0)
         {
-            tryValidMove(myLoc.directionTo(myHQ), SAFE_CLAUSE);
+            tryValidMove(myLoc.directionTo(intToMapLocation(defendLocInt)), SAFE_CLAUSE);
             return;
         }
         
