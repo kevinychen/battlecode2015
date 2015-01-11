@@ -24,7 +24,7 @@ public class RobotPlayer
 
         BASE_SUPPLY[RobotType.BEAVER.ordinal()] = BEAVER_SUPPLY;
         BASE_SUPPLY[RobotType.MINER.ordinal()] = 5000;
-        BASE_SUPPLY[RobotType.LAUNCHER.ordinal()] = 2500;
+        BASE_SUPPLY[RobotType.LAUNCHER.ordinal()] = 5000;
         BASE_SUPPLY[RobotType.DRONE.ordinal()] = 2500;
     }
     static final int I_BEAVER = RobotType.BEAVER.ordinal();
@@ -52,47 +52,31 @@ public class RobotPlayer
             return true;
         }
     };
-    
-    // Build order
-    static final int MAX_BEAVERS = 1;
-    static final int MAX_MINER_FACTORIES = 1;
-    static final int MAX_MINERS = 30;
-    static final int MAX_HELIPADS = 2;
-    static final int MAX_DRONES = 15;
-
-    // Heuristic to see if we need more miners.
-    // If during the last ORE_WINDOW turns, we've gathered more than
-    // MINE_SATURATION ore per turn on average, then produce more miners.
-    // Unless we have more than ORE_SATURATION ore in the bank, then DON'T
-    // PRODUCE more miners!
-    static final int ORE_WINDOW = 10;
-    static final double MINE_SATURATION = 0.7;
-    static final int ORE_SATURATION = 700;
-
-    // Build orders/compositions
-    static final int[] START_ORDER = new int[RobotType.values().length];
-    static final int[] COMP_RATIO = new int[RobotType.values().length];
-    static
+    static final Clause DEFENSE_CLAUSE = new Clause()
     {
-        START_ORDER[RobotType.BEAVER.ordinal()] = 3;
-        START_ORDER[RobotType.MINERFACTORY.ordinal()] = 2;
-        START_ORDER[RobotType.HELIPAD.ordinal()] = 1;
-        START_ORDER[RobotType.AEROSPACELAB.ordinal()] = 4;
-
-        COMP_RATIO[RobotType.MINER.ordinal()] = 2;
-        COMP_RATIO[RobotType.AEROSPACELAB.ordinal()] = 1;
-        COMP_RATIO[RobotType.SUPPLYDEPOT.ordinal()] = 2;
-    }
-
+        public boolean isValid(Direction dir)
+        {
+            if (!SAFE_CLAUSE.isValid(dir))
+                return false;
+            int myDist = myLoc.distanceSquaredTo(myHQ);
+            if (myDist > 36)
+                return true;
+            MapLocation goal = myLoc.add(dir);
+            return goal.distanceSquaredTo(myHQ) <= myDist;
+        }
+    };
+    
     // Message channels
     static final int ROUND_NUM = 0;
     static final int POP_COUNT = 1;  // to 31
-    static final int DRONE_ROLES = 32;  // to 39
-    static final int HELP_TARGETS = 48;
-    static final int MAX_HELP_TARGETS = 4;
+    static final int PATROL_DRONES = 32;  // to 39
+    static final int ENEMY_ARMY_LOC = 40;
+    static final int ENEMY_ECON_LOC = 41;
+    static final int DEFEND_CALL = 42;
 
     // Game constants
     static RobotController rc;
+    static int myID;
     static Team myTeam;
     static Team enemyTeam;
     static RobotType myType;
@@ -113,12 +97,13 @@ public class RobotPlayer
 
     // Other
     static Direction lastMoveDir;
-    static double prevTeamOre;
-    static double[] prevOreGained = new double[ORE_WINDOW];
+    static MapLocation prevEnemyArmyLoc;
+    static MapLocation prevEnemyEconLoc;
 
     public static void run(RobotController tomatojuice)
     {
         rc = tomatojuice;
+        myID = rc.getID();
         myTeam = rc.getTeam();
         enemyTeam = myTeam.opponent();
         myType = rc.getType();
@@ -177,6 +162,55 @@ public class RobotPlayer
                         RobotType type = r.type;
                         popCounts[type.ordinal()]++;
                     }
+                    
+                    find_enemy_army:
+                    {
+                        if (prevEnemyArmyLoc != null)
+                        {
+                            for (RobotInfo r : rc.senseNearbyRobots(prevEnemyArmyLoc, 36, enemyTeam))
+                                if (r.type != RobotType.BEAVER && r.type != RobotType.MINER)
+                                {
+                                    rc.broadcast(ENEMY_ARMY_LOC, mapLocationToInt(r.location));
+                                    prevEnemyArmyLoc = r.location;
+                                    break find_enemy_army;
+                                }
+                        }
+                        for (RobotInfo r : rc.senseNearbyRobots(999999, enemyTeam))
+                            if (r.type != RobotType.BEAVER && r.type != RobotType.MINER)
+                            {
+                                rc.broadcast(ENEMY_ARMY_LOC, mapLocationToInt(r.location));
+                                prevEnemyArmyLoc = r.location;
+                                break find_enemy_army;
+                            }
+                        rc.broadcast(ENEMY_ARMY_LOC, 0);
+                    }
+                    find_enemy_econ:
+                    {
+                        if (prevEnemyEconLoc != null)
+                        {
+                            for (RobotInfo r : rc.senseNearbyRobots(prevEnemyEconLoc, 36, enemyTeam))
+                                if (r.type == RobotType.BEAVER || r.type == RobotType.MINER)
+                                {
+                                    rc.broadcast(ENEMY_ECON_LOC, mapLocationToInt(r.location));
+                                    prevEnemyEconLoc = r.location;
+                                    break find_enemy_econ;
+                                }
+                        }
+                        for (RobotInfo r : rc.senseNearbyRobots(999999, enemyTeam))
+                            if (r.type == RobotType.BEAVER || r.type == RobotType.MINER)
+                            {
+                                rc.broadcast(ENEMY_ECON_LOC, mapLocationToInt(r.location));
+                                prevEnemyEconLoc = r.location;
+                                break find_enemy_econ;
+                            }
+                        rc.broadcast(ENEMY_ECON_LOC, 0);
+                    }
+
+                    if (rc.senseNearbyRobots(myLoc, 100, enemyTeam).length > 0)
+                        rc.broadcast(DEFEND_CALL, 1);
+                    else
+                        rc.broadcast(DEFEND_CALL, 0);
+
                     for (RobotType type : BROADCAST_TYPES)
                         rc.broadcast(POP_COUNT + type.ordinal(), popCounts[type.ordinal()]);
 
@@ -245,6 +279,7 @@ public class RobotPlayer
     static void runHQ() throws Exception
     {
         int numBeavers = rc.readBroadcast(POP_COUNT + I_BEAVER);
+        final int MAX_BEAVERS = roundNum < 300 ? 1 : 2;
         if (numBeavers < MAX_BEAVERS)
             trySpawn(RobotType.BEAVER);
         attackSomething();
@@ -257,31 +292,37 @@ public class RobotPlayer
 
     static void runBeaver() throws Exception
     {
-        int numMinerFactories = rc.readBroadcast(POP_COUNT + I_MINERFACTORY);
-        if (numMinerFactories < MAX_MINER_FACTORIES)
+        build_stuff:
         {
-            tryBuild(RobotType.MINERFACTORY);
-            return;
+            int numMinerFactories = rc.readBroadcast(POP_COUNT + I_MINERFACTORY);
+            final int MAX_MINER_FACTORIES = 1;
+            if (numMinerFactories < MAX_MINER_FACTORIES)
+            {
+                tryBuild(RobotType.MINERFACTORY);
+                break build_stuff;
+            }
+
+            int numHelipads = rc.readBroadcast(POP_COUNT + I_HELIPAD);
+            final int MAX_HELIPADS = 2;
+            if (numHelipads < MAX_HELIPADS)
+            {
+                tryBuild(RobotType.HELIPAD);
+                break build_stuff;
+            }
+
+            int numLabs = rc.readBroadcast(POP_COUNT + I_LAB);
+            int numDepots = rc.readBroadcast(POP_COUNT + I_DEPOT);
+            if (numDepots < numLabs - 2)
+            {
+                tryBuild(RobotType.SUPPLYDEPOT);
+                break build_stuff;
+            }
+
+            tryBuild(RobotType.AEROSPACELAB);
         }
 
-        int numHelipads = rc.readBroadcast(POP_COUNT + I_HELIPAD);
-        if (numHelipads < MAX_HELIPADS)
-        {
-            tryBuild(RobotType.HELIPAD);
-            return;
-        }
-        
-        // TODO if some condition, build aerospace lab
-        tryBuild(RobotType.AEROSPACELAB);
-        // TODO if some condition, build supply depot
-
-        if (rc.senseOre(myLoc) > 0 && rc.isCoreReady())
-        {
-            rc.mine();
-            return;
-        }
-
-        if (myLoc.distanceSquaredTo(myHQ) >= 80)
+        final int HQ_DIST = roundNum < 500 ? 15 : (roundNum < 1000 ? 35 : 80);
+        if (myLoc.distanceSquaredTo(myHQ) >= HQ_DIST)
             tryWander(directionToInt(myLoc.directionTo(myHQ)));
         else
             tryRandomMove();
@@ -335,6 +376,7 @@ public class RobotPlayer
     static void runMinerFactory() throws Exception
     {
         int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
+        final int MAX_MINERS = 30;
         if (numMiners < MAX_MINERS)
             trySpawn(RobotType.MINER);
     }
@@ -342,82 +384,65 @@ public class RobotPlayer
     static void runHelipad() throws Exception
     {
         int numDrones = rc.readBroadcast(POP_COUNT + I_DRONE);
+        final int MAX_DRONES = 8;
         if (roundNum < RUSH_TIME && numDrones < MAX_DRONES)
             trySpawn(RobotType.DRONE);
     }
     
-    static int helpChannel;
-    static boolean harass;
-    static int patrolIndex;
+    static int patrolIndex = -1;  // 0-8, or 9 for wanderer
     static MapLocation patrolSpot;
     static void runDrone() throws Exception
     {
-        RobotInfo[] enemies = rc.senseNearbyRobots(myType.attackRadiusSquared, enemyTeam);
-        if (enemies.length > 0)
-        {
-            if (rc.isWeaponReady())
-                rc.attackLocation(enemies[0].location);
-
-            if (helpChannel == 0)
-                helpChannel = getHelpChannel();
-            rc.broadcast(helpChannel, mapLocationToInt(myLoc));
-
-            tryValidMove(enemies[0].location.directionTo(myLoc), new Clause()
+        RobotInfo[] closeEnemies = rc.senseNearbyRobots(myType.attackRadiusSquared, enemyTeam);
+        if (closeEnemies.length > 0 && rc.isWeaponReady())
+            rc.attackLocation(closeEnemies[0].location);
+        for (RobotInfo r : closeEnemies)
+            if (!r.type.isBuilding && r.type != RobotType.BEAVER && r.type != RobotType.MINER)
             {
-                public boolean isValid(Direction dir)
+                tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
+                break;
+            }
+
+        RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
+        for (RobotInfo r : enemies)
+            if (r.type == RobotType.LAUNCHER || r.type == RobotType.MISSILE)
+            {
+                tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
+                break;
+            }
+        
+        if (rc.readBroadcast(DEFEND_CALL) != 0)
+        {
+            tryValidMove(myLoc.directionTo(myHQ), SAFE_CLAUSE);
+            return;
+        }
+
+        int enemyLocInt = rc.readBroadcast(ENEMY_ECON_LOC);
+        if (enemyLocInt != 0)
+        {
+            tryValidMove(myLoc.directionTo(intToMapLocation(enemyLocInt)), SAFE_CLAUSE);
+            return;
+        }
+        
+        if (patrolIndex == -1)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                int droneID = rc.readBroadcast(PATROL_DRONES + i);
+                if (droneID == 0 || !rc.canSenseRobot(droneID))  // not filled, or dead
                 {
-                    MapLocation goal = myLoc.add(dir);
-                    return goal.distanceSquaredTo(myHQ) <= myLoc.distanceSquaredTo(myHQ);
-                }
-            });
-            return;
-        }
-        else if (helpChannel != 0)
-        {
-            rc.broadcast(helpChannel, 0);
-            helpChannel = 0;
-        }
-        
-        MapLocation nearestHelpLoc = null;
-        for (int i = 0; i < MAX_HELP_TARGETS; i++)
-        {
-            int code = rc.readBroadcast(HELP_TARGETS + i);
-            if (code != 0)
-            {
-                MapLocation helpLoc = intToMapLocation(code);
-                if (nearestHelpLoc == null || myLoc.distanceSquaredTo(helpLoc) < myLoc.distanceSquaredTo(nearestHelpLoc))
-                    nearestHelpLoc = helpLoc;
-            }
-        }
-        if (nearestHelpLoc != null)
-        {
-            if (patrolIndex != 0)
-            {
-                rc.broadcast(DRONE_ROLES + patrolIndex, 0);
-                harass = true;
-            }
-            tryValidMove(myLoc.directionTo(nearestHelpLoc), SAFE_CLAUSE);
-            return;
-        }
-
-        if (!harass && (patrolSpot == null || rc.senseTerrainTile(patrolSpot) == TerrainTile.OFF_MAP))
-        {
-            int index;
-            for (index = 0; index < 8; index++)
-                if (rc.readBroadcast(DRONE_ROLES + index) == 0)
+                    patrolIndex = i;
+                    patrolSpot = myHQ.add(directions[i], 6);
+                    rc.broadcast(PATROL_DRONES + i, myID);
                     break;
-            if (index < 8)
-            {
-                patrolIndex = index;
-                patrolSpot = myHQ.add(directions[index], 6);
-                rc.broadcast(DRONE_ROLES + index, 1);
+                }
             }
-            else
-                harass = true;
+            if (patrolIndex == -1)
+                patrolIndex = 9;
         }
         
-        if (harass)
-            tryValidMove(myLoc.directionTo(enemyHQ), SAFE_CLAUSE);
+        if (patrolIndex == 9)
+            tryRandomMove();
         else if (myLoc.distanceSquaredTo(patrolSpot) > 1)
             tryValidMove(myLoc.directionTo(patrolSpot), SAFE_CLAUSE);
     }
@@ -485,7 +510,7 @@ public class RobotPlayer
 
     static Direction tryRandomMove() throws Exception
     {
-        return tryWander((int) (Math.random() * 8));
+        return tryWander(random.nextInt(8));
     }
 
     static Direction tryWander(int dirint) throws Exception
@@ -584,17 +609,19 @@ public class RobotPlayer
         }
     }
 
-    static void tryBuild(RobotType type) throws Exception
+    static Direction tryBuild(RobotType type) throws Exception
     {
         if (!rc.isCoreReady() || teamOre < type.oreCost)
-            return;
+            return null;
         int i = 0;
         while (i < 8 && (!rc.canMove(directions[i]) || !tryBuildHere(type, myLoc.add(directions[i]))))
             i++;
         if (i < 8)
         {
             rc.build(directions[i], type);
+            return directions[i];
         }
+        return null;
     }
 
     static boolean tryBuildHere(RobotType type, MapLocation loc)
@@ -671,28 +698,6 @@ public class RobotPlayer
                 return true;
 
         return false;
-    }
-    
-    static MapLocation patrolSpot()
-    {
-        MapLocation[] candLocs = MapLocation.getAllMapLocationsWithinRadiusSq(myHQ, 99);
-        int index = rc.getID() % candLocs.length;
-        while (true)
-        {
-            MapLocation cand = candLocs[index % candLocs.length];
-            if (rc.senseTerrainTile(cand) != TerrainTile.OFF_MAP &&
-                    myHQ.distanceSquaredTo(cand) >= 25)
-                return cand;
-            index++;
-        }
-    }
-
-    static int getHelpChannel() throws Exception
-    {
-        int channel = HELP_TARGETS;
-        while (channel < HELP_TARGETS + MAX_HELP_TARGETS && rc.readBroadcast(channel) != 0)
-            channel++;
-        return channel;
     }
     
     interface Clause
