@@ -9,8 +9,8 @@ public class RobotPlayer
     { Direction.NORTH, Direction.NORTH_EAST, Direction.EAST, Direction.SOUTH_EAST, Direction.SOUTH,
             Direction.SOUTH_WEST, Direction.WEST, Direction.NORTH_WEST };
     static final RobotType[] BROADCAST_TYPES =
-    { RobotType.BEAVER, RobotType.MINER, RobotType.MINERFACTORY, RobotType.HELIPAD, RobotType.SUPPLYDEPOT,
-            RobotType.AEROSPACELAB, RobotType.LAUNCHER };
+    { RobotType.BEAVER, RobotType.MINER, RobotType.MINERFACTORY, RobotType.HELIPAD, RobotType.DRONE,
+            RobotType.SUPPLYDEPOT, RobotType.AEROSPACELAB, RobotType.LAUNCHER };
     static final boolean[] IS_MAIN_BUILDING = new boolean[RobotType.values().length];
     static final int[] BASE_SUPPLY = new int[RobotType.values().length];
     static final int BEAVER_SUPPLY = 1000;
@@ -25,17 +25,40 @@ public class RobotPlayer
         BASE_SUPPLY[RobotType.BEAVER.ordinal()] = BEAVER_SUPPLY;
         BASE_SUPPLY[RobotType.MINER.ordinal()] = 5000;
         BASE_SUPPLY[RobotType.LAUNCHER.ordinal()] = 2500;
+        BASE_SUPPLY[RobotType.DRONE.ordinal()] = 2500;
     }
-    static final int MAX_MINERS = 40;
     static final int I_BEAVER = RobotType.BEAVER.ordinal();
     static final int I_MINER = RobotType.MINER.ordinal();
     static final int I_MINERFACTORY = RobotType.MINERFACTORY.ordinal();
+    static final int I_DRONE = RobotType.DRONE.ordinal();
     static final int I_HELIPAD = RobotType.HELIPAD.ordinal();
     static final int I_LAB = RobotType.AEROSPACELAB.ordinal();
     static final int I_DEPOT = RobotType.SUPPLYDEPOT.ordinal();
     static final int RUSH_TIME = 1000;
     static final int MIN_ORE = 9;
     static final int LAUNCHER_RANGE = 36;
+    static final Clause SAFE_CLAUSE = new Clause()
+    {
+        public boolean isValid(Direction dir)
+        {
+            MapLocation target = myLoc.add(dir);
+            if (enemyHQ.distanceSquaredTo(target) <= GameConstants.HQ_BUFFED_ATTACK_RADIUS_SQUARED)
+                return false;
+
+            for (MapLocation loc : enemyTowers)
+                if (loc.distanceSquaredTo(target) <= RobotType.TOWER.attackRadiusSquared)
+                    return false;
+
+            return true;
+        }
+    };
+    
+    // Build order
+    static final int MAX_BEAVERS = 1;
+    static final int MAX_MINER_FACTORIES = 1;
+    static final int MAX_MINERS = 30;
+    static final int MAX_HELIPADS = 2;
+    static final int MAX_DRONES = 15;
 
     // Heuristic to see if we need more miners.
     // If during the last ORE_WINDOW turns, we've gathered more than
@@ -64,6 +87,9 @@ public class RobotPlayer
     // Message channels
     static final int ROUND_NUM = 0;
     static final int POP_COUNT = 1;  // to 31
+    static final int DRONE_ROLES = 32;  // to 39
+    static final int HELP_TARGETS = 48;
+    static final int MAX_HELP_TARGETS = 4;
 
     // Game constants
     static RobotController rc;
@@ -76,6 +102,7 @@ public class RobotPlayer
     static MapLocation myHQ;
     static MapLocation enemyHQ;
     static MapLocation frontier;
+    static Random random;
 
     // Round constants
     static int roundNum;
@@ -125,6 +152,7 @@ public class RobotPlayer
             myHQ = rc.senseHQLocation();
             enemyHQ = rc.senseEnemyHQLocation();
             frontier = myHQ.add(myHQ.directionTo(enemyHQ), 8);
+            random = new Random(rc.getID());
         }
         catch (Exception e)
         {
@@ -194,12 +222,14 @@ public class RobotPlayer
                     runMiner();
                 else if (myType == RobotType.MINERFACTORY)
                     runMinerFactory();
+                else if (myType == RobotType.HELIPAD)
+                    runHelipad();
+                else if (myType == RobotType.DRONE)
+                    runDrone();
                 else if (myType == RobotType.AEROSPACELAB)
                     runLab();
                 else if (myType == RobotType.LAUNCHER)
                     runLauncher();
-                else if (myType == RobotType.MISSILE)
-                    runMissile();
             }
             catch (Exception e)
             {
@@ -215,7 +245,7 @@ public class RobotPlayer
     static void runHQ() throws Exception
     {
         int numBeavers = rc.readBroadcast(POP_COUNT + I_BEAVER);
-        if (numBeavers < START_ORDER[I_BEAVER])
+        if (numBeavers < MAX_BEAVERS)
             trySpawn(RobotType.BEAVER);
         attackSomething();
     }
@@ -227,26 +257,33 @@ public class RobotPlayer
 
     static void runBeaver() throws Exception
     {
-        int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
         int numMinerFactories = rc.readBroadcast(POP_COUNT + I_MINERFACTORY);
-        int numHelipads = rc.readBroadcast(POP_COUNT + I_HELIPAD);
-        int numLabs = rc.readBroadcast(POP_COUNT + I_LAB);
-        int numDepots = rc.readBroadcast(POP_COUNT + I_DEPOT);
-        if (numMinerFactories < START_ORDER[I_MINERFACTORY])
+        if (numMinerFactories < MAX_MINER_FACTORIES)
+        {
             tryBuild(RobotType.MINERFACTORY);
-        else if (numHelipads < START_ORDER[I_HELIPAD])
-            tryBuild(RobotType.HELIPAD);
-        else if (numDepots < numLabs * COMP_RATIO[I_DEPOT] / COMP_RATIO[I_LAB])
-            tryBuild(RobotType.SUPPLYDEPOT);
-        else if (numLabs < START_ORDER[I_LAB] || numLabs < numMiners * COMP_RATIO[I_LAB] / COMP_RATIO[I_MINER] || teamOre > ORE_SATURATION)
-            tryBuild(RobotType.AEROSPACELAB);
+            return;
+        }
 
-        if (rc.senseOre(myLoc) > 0 && rc.isCoreReady() && rc.canMine())
+        int numHelipads = rc.readBroadcast(POP_COUNT + I_HELIPAD);
+        if (numHelipads < MAX_HELIPADS)
+        {
+            tryBuild(RobotType.HELIPAD);
+            return;
+        }
+        
+        // TODO if some condition, build aerospace lab
+        tryBuild(RobotType.AEROSPACELAB);
+        // TODO if some condition, build supply depot
+
+        if (rc.senseOre(myLoc) > 0 && rc.isCoreReady())
+        {
             rc.mine();
+            return;
+        }
 
         if (myLoc.distanceSquaredTo(myHQ) >= 80)
             tryWander(directionToInt(myLoc.directionTo(myHQ)));
-        else if (roundNum < 100 || roundNum % 10 == 0)
+        else
             tryRandomMove();
     }
 
@@ -297,21 +334,92 @@ public class RobotPlayer
 
     static void runMinerFactory() throws Exception
     {
-        if (teamOre < ORE_SATURATION)
+        int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
+        if (numMiners < MAX_MINERS)
+            trySpawn(RobotType.MINER);
+    }
+
+    static void runHelipad() throws Exception
+    {
+        int numDrones = rc.readBroadcast(POP_COUNT + I_DRONE);
+        if (roundNum < RUSH_TIME && numDrones < MAX_DRONES)
+            trySpawn(RobotType.DRONE);
+    }
+    
+    static int helpChannel;
+    static boolean harass;
+    static int patrolIndex;
+    static MapLocation patrolSpot;
+    static void runDrone() throws Exception
+    {
+        RobotInfo[] enemies = rc.senseNearbyRobots(myType.attackRadiusSquared, enemyTeam);
+        if (enemies.length > 0)
         {
-            int oreGained = 0, turnsOreGained = 0;
-            for (int i = 0; i < ORE_WINDOW; i++)
-                if (prevOreGained[i] > 0)
+            if (rc.isWeaponReady())
+                rc.attackLocation(enemies[0].location);
+
+            if (helpChannel == 0)
+                helpChannel = getHelpChannel();
+            rc.broadcast(helpChannel, mapLocationToInt(myLoc));
+
+            tryValidMove(enemies[0].location.directionTo(myLoc), new Clause()
+            {
+                public boolean isValid(Direction dir)
                 {
-                    oreGained += prevOreGained[i];
-                    turnsOreGained++;
+                    MapLocation goal = myLoc.add(dir);
+                    return goal.distanceSquaredTo(myHQ) <= myLoc.distanceSquaredTo(myHQ);
                 }
-            int numMiners = rc.readBroadcast(POP_COUNT + I_MINER);
-            if (oreGained >= numMiners * MINE_SATURATION * turnsOreGained)
-                trySpawn(RobotType.MINER);
+            });
+            return;
         }
-        prevOreGained[roundNum % ORE_WINDOW] = (teamOre > prevTeamOre ? teamOre - prevTeamOre : 0);
-        prevTeamOre = teamOre;
+        else if (helpChannel != 0)
+        {
+            rc.broadcast(helpChannel, 0);
+            helpChannel = 0;
+        }
+        
+        MapLocation nearestHelpLoc = null;
+        for (int i = 0; i < MAX_HELP_TARGETS; i++)
+        {
+            int code = rc.readBroadcast(HELP_TARGETS + i);
+            if (code != 0)
+            {
+                MapLocation helpLoc = intToMapLocation(code);
+                if (nearestHelpLoc == null || myLoc.distanceSquaredTo(helpLoc) < myLoc.distanceSquaredTo(nearestHelpLoc))
+                    nearestHelpLoc = helpLoc;
+            }
+        }
+        if (nearestHelpLoc != null)
+        {
+            if (patrolIndex != 0)
+            {
+                rc.broadcast(DRONE_ROLES + patrolIndex, 0);
+                harass = true;
+            }
+            tryValidMove(myLoc.directionTo(nearestHelpLoc), SAFE_CLAUSE);
+            return;
+        }
+
+        if (!harass && (patrolSpot == null || rc.senseTerrainTile(patrolSpot) == TerrainTile.OFF_MAP))
+        {
+            int index;
+            for (index = 0; index < 8; index++)
+                if (rc.readBroadcast(DRONE_ROLES + index) == 0)
+                    break;
+            if (index < 8)
+            {
+                patrolIndex = index;
+                patrolSpot = myHQ.add(directions[index], 6);
+                rc.broadcast(DRONE_ROLES + index, 1);
+            }
+            else
+                harass = true;
+        }
+        
+        if (harass)
+            tryValidMove(myLoc.directionTo(enemyHQ), SAFE_CLAUSE);
+        else if (myLoc.distanceSquaredTo(patrolSpot) > 1)
+            tryValidMove(myLoc.directionTo(patrolSpot), SAFE_CLAUSE);
     }
 
     static void runLab() throws Exception
@@ -426,6 +534,23 @@ public class RobotPlayer
         return null;
     }
     
+    static void tryValidMove(Direction dir, Clause c) throws Exception
+    {
+        if (!rc.isCoreReady())
+            return;
+        Direction left, right, left2, right2;
+        if (rc.canMove(dir) && c.isValid(dir))
+            rc.move(dir);
+        else if (rc.canMove(left = dir.rotateLeft()) && c.isValid(left))
+            rc.move(left);
+        else if (rc.canMove(right = dir.rotateRight()) && c.isValid(right))
+            rc.move(right);
+        else if (rc.canMove(left2 = left.rotateLeft()) && c.isValid(left2))
+            rc.move(left2);
+        else if (rc.canMove(right2 = right.rotateRight()) && c.isValid(right2))
+            rc.move(right2);
+    }
+    
     // Optimized for missiles
     static void tryMissileMove(Direction dir) throws Exception
     {
@@ -524,6 +649,16 @@ public class RobotPlayer
                 return -1;
         }
     }
+    
+    static int mapLocationToInt(MapLocation loc)
+    {
+        return ((loc.x + (1 << 15)) << 16) | (loc.y + (1 << 15));
+    }
+    
+    static MapLocation intToMapLocation(int code)
+    {
+        return new MapLocation((code >>> 16) - (1 << 15), (code & 0xffff) - (1 << 15));
+    }
 
     static boolean isBadDir(Direction dir) throws Exception
     {
@@ -537,10 +672,32 @@ public class RobotPlayer
 
         return false;
     }
-
-    static double mine(double current)
+    
+    static MapLocation patrolSpot()
     {
-        return Math.min(3, current / 4);
+        MapLocation[] candLocs = MapLocation.getAllMapLocationsWithinRadiusSq(myHQ, 99);
+        int index = rc.getID() % candLocs.length;
+        while (true)
+        {
+            MapLocation cand = candLocs[index % candLocs.length];
+            if (rc.senseTerrainTile(cand) != TerrainTile.OFF_MAP &&
+                    myHQ.distanceSquaredTo(cand) >= 25)
+                return cand;
+            index++;
+        }
+    }
+
+    static int getHelpChannel() throws Exception
+    {
+        int channel = HELP_TARGETS;
+        while (channel < HELP_TARGETS + MAX_HELP_TARGETS && rc.readBroadcast(channel) != 0)
+            channel++;
+        return channel;
+    }
+    
+    interface Clause
+    {
+        boolean isValid(Direction dir);
     }
 
     static class Bugger {
