@@ -283,12 +283,12 @@ public class RobotPlayer
         final int MAX_BEAVERS = roundNum < 300 ? 1 : 2;
         if (numBeavers < MAX_BEAVERS)
             trySpawn(RobotType.BEAVER);
-        attackSomething();
+        attack();
     }
 
     static void runTower() throws Exception
     {
-        attackSomething();
+        attack();
     }
 
     static void runBeaver() throws Exception
@@ -336,12 +336,20 @@ public class RobotPlayer
 
         RobotInfo[] enemies = rc.senseNearbyRobots(35, enemyTeam);
         for (RobotInfo r : enemies)
+        {
+            if ((r.type == RobotType.BEAVER || r.type == RobotType.MINER || r.type == RobotType.DRONE) &&
+                    myLoc.distanceSquaredTo(r.location) <= myRange && rc.isWeaponReady())
+            {
+                rc.attackLocation(r.location);
+                return;
+            }
             if (r.type.canAttack() && r.type != RobotType.BEAVER && r.type != RobotType.MINER)
             {
                 lastMoveDir = enemies[0].location.directionTo(myLoc);
                 tryMove(directionToInt(lastMoveDir));
                 return;
             }
+        }
 
         double currOre = rc.senseOre(myLoc);
         if (currOre > MIN_ORE)
@@ -351,7 +359,7 @@ public class RobotPlayer
         }
 
         for (Direction dir : directions)
-            if (rc.senseOre(myLoc.add(dir)) > 2 * currOre && !isBadDir(dir) && rc.canMove(dir))
+            if (dir.opposite() != lastMoveDir && rc.senseOre(myLoc.add(dir)) > 2 * currOre && !isBadDir(dir) && rc.canMove(dir))
             {
                 lastMoveDir = dir;
                 rc.move(dir);
@@ -395,7 +403,7 @@ public class RobotPlayer
     static double supplyRefuel;
     static void runDrone() throws Exception
     {
-        attackSomething();
+        attack();
 
         RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
         for (RobotInfo r : enemies)
@@ -542,15 +550,28 @@ public class RobotPlayer
     }
 
     // This method will attack an enemy in sight, if there is one
-    static void attackSomething() throws GameActionException
+    static void attack() throws GameActionException
     {
         if (!rc.isWeaponReady())
             return;
-        RobotInfo[] enemies = rc.senseNearbyRobots(myRange, enemyTeam);
-        if (enemies.length > 0)
+        double lowestHits = 999999;
+        MapLocation lowestHitsLoc = null;
+        for (RobotInfo r : rc.senseNearbyRobots(myRange, enemyTeam))
         {
-            rc.attackLocation(enemies[0].location);
+            double numHits = r.type == RobotType.MISSILE ? r.health : r.health / myType.attackPower;
+            if (numHits <= 1)
+            {
+                rc.attackLocation(r.location);
+                return;
+            }
+            else if (numHits < lowestHits)
+            {
+                lowestHits = numHits;
+                lowestHitsLoc = r.location;
+            }
         }
+        if (lowestHitsLoc != null)
+            rc.attackLocation(lowestHitsLoc);
     }
 
     static Direction tryRandomMove() throws Exception
