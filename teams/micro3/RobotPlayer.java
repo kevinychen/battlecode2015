@@ -358,13 +358,17 @@ public class RobotPlayer
             return;
         }
 
-        for (Direction dir : directions)
+        int offset = rc.getID() % 8;
+        for (int i = 0; i < 8; i++)
+        {
+            Direction dir = directions[(offset + i) % 8];
             if (dir.opposite() != lastMoveDir && rc.senseOre(myLoc.add(dir)) > 2 * currOre && !isBadDir(dir) && rc.canMove(dir))
             {
                 lastMoveDir = dir;
                 rc.move(dir);
                 return;
             }
+        }
 
         if (currOre > 0)
         {
