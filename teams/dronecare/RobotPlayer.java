@@ -402,106 +402,161 @@ public class RobotPlayer
             trySpawn(RobotType.DRONE);
     }
     
-    static int patrolIndex = -1;  // 0-8, or 9 for wanderer
-    static MapLocation patrolSpot;
-    static double supplyRefuel;
+    static MapLocation droneDest = null;
+    static double supplyRefuel = -1;
     static void runDrone() throws Exception
     {
         attack();
-
+        
+        if (!rc.isCoreReady())
+            return;
+        int[] scores = new int[9];
         RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
-        for (RobotInfo r : enemies)
+        boolean seeMissile = false;
+        for (int i = 0; i < 9; i++)
         {
-            if (r.type == RobotType.LAUNCHER || r.type == RobotType.MISSILE)
+            MapLocation loc;
+            if (i < 8)
             {
-                tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
-                return;
+                if (!rc.canMove(directions[i]))
+                {
+                    scores[i] = -1000;
+                    continue;
+                }
+                loc = myLoc.add(directions[i]);
             }
             else
             {
-                int dist = myLoc.distanceSquaredTo(r.location);
-                if (r.type == RobotType.BASHER && dist <= 8 ||
-                        r.type != RobotType.DRONE && dist <= r.type.attackRadiusSquared)
-                {
-                    tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
-                    return;
-                }
-            }
-        }
-        
-        // If there is a drone out of range, stay put so you get the first attack.
-        for (RobotInfo r : enemies)
-            if (r.type == RobotType.DRONE)
-            {
-                if (myLoc.distanceSquaredTo(r.location) <= myRange)
-                    tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
-                else if (r.weaponDelay > 1)
-                    tryValidMove(myLoc.directionTo(r.location), SAFE_CLAUSE);
-                else if (r.weaponDelay <= 1)
-                    return;
-            }
-        
-        RobotInfo[] closeEnemies = rc.senseNearbyRobots(8, enemyTeam);
-        for (RobotInfo r : closeEnemies)
-            if (r.type == RobotType.SOLDIER || r.type == RobotType.BASHER || r.type == RobotType.TANK)
-            {
-                tryValidMove(r.location.directionTo(myLoc), DEFENSE_CLAUSE);
-                break;
+                loc = myLoc;
             }
 
-        int defendLocInt = rc.readBroadcast(DEFEND_CALL);
-        if (defendLocInt != 0)
-        {
-            tryValidMove(myLoc.directionTo(intToMapLocation(defendLocInt)), SAFE_CLAUSE);
-            return;
+            for (int j = 0; j < enemies.length && j <= 10; j++)
+            {
+                RobotInfo r = enemies[j];
+                int dist = loc.distanceSquaredTo(r.location);
+                if (r.type == RobotType.DRONE || r.type == RobotType.COMMANDER)
+                {
+                    if (dist <= r.type.attackRadiusSquared)
+                        scores[i] -= 100;
+                    else
+                        scores[i] += 10;
+                }
+                else if (r.type == RobotType.MISSILE)
+                {
+                    if (dist <= 2)
+                        scores[i] -= 250;
+                    else if (dist <= 4)
+                        scores[i] -= 225;
+                    else if (dist <= 8)
+                        scores[i] -= 200;
+                    else if (dist <= 15)
+                        scores[i] -= 175;
+                    else if (dist <= 18)
+                        scores[i] -= 150;
+
+                    seeMissile = true;
+                }
+                else if (r.type.isBuilding)
+                {
+                    scores[i] += 20;
+                }
+                else if (r.type == RobotType.LAUNCHER)
+                {
+                    if (dist <= 18)
+                        scores[i] -= 200;
+                }
+                else if (r.type == RobotType.TANK)
+                {
+                    if (dist <= r.type.attackRadiusSquared)
+                        scores[i] -= 200;
+                }
+                else if (r.type == RobotType.MINER || r.type == RobotType.BEAVER ||
+                        r.type == RobotType.SOLDIER || r.type == RobotType.BASHER)
+                {
+                    if (dist <= 8)
+                        scores[i] -= r.type.attackPower * 10;
+                    else if (dist <= 10)
+                        scores[i] += 20;
+                }
+            }
+            
+            if (enemyHQ.distanceSquaredTo(loc) <= GameConstants.HQ_BUFFED_ATTACK_RADIUS_SQUARED)
+                scores[i] -= 600;
+            for (MapLocation towerLoc : enemyTowers)
+                if (towerLoc.distanceSquaredTo(loc) <= RobotType.TOWER.attackRadiusSquared)
+                    scores[i] -= 500;
         }
+        
+        if (seeMissile)
+        {
+            scores[1] -= 60;
+            scores[3] -= 60;
+            scores[5] -= 60;
+            scores[7] -= 60;
+        }
+        
+        int maxScore = -999;
+        for (int score : scores)
+            if (score > maxScore)
+                maxScore = score;
+        
+        final boolean[] good = new boolean[9];
+        for (int i = 0; i < 9; i++)
+            if (scores[i] == maxScore)
+                good[i] = true;
+        
+        rc.setIndicatorString(1, Arrays.toString(scores));
+        rc.setIndicatorString(2, Arrays.toString(good));
         
         // Low supply, go back to HQ
-        if (supplyRefuel > 0 || myLoc.distanceSquaredTo(myHQ) + 100 >= mySupply / myType.supplyUpkeep * mySupply / myType.supplyUpkeep)
+        if (myLoc.distanceSquaredTo(myHQ) + 500 >= mySupply / myType.supplyUpkeep * mySupply / myType.supplyUpkeep)
         {
-            rc.setIndicatorString(2, "refuel to " + supplyRefuel);
-            if (supplyRefuel == 0)
+            if (supplyRefuel == -1)
+            {
                 supplyRefuel = mySupply;
-            tryValidMove(myLoc.directionTo(myHQ), SAFE_CLAUSE);
-            if (mySupply > supplyRefuel)
-                supplyRefuel = 0;
-            return;
+                droneDest = myHQ;
+            }
         }
 
-        int enemyLocInt = rc.readBroadcast(ENEMY_ECON_LOC);
-        if (enemyLocInt != 0)
+        if (droneDest != null && droneDest.equals(myHQ))
         {
-            tryValidMove(myLoc.directionTo(intToMapLocation(enemyLocInt)), SAFE_CLAUSE);
+            if(mySupply > supplyRefuel)
+            {
+                supplyRefuel = -1;
+                droneDest = null;
+            }
+        }
+        else
+        {
+            if (!droneDest.equals(enemyHQ) && myLoc.distanceSquaredTo(droneDest) <= 64)
+                droneDest = enemyHQ;
+        }
+
+        if (droneDest == null)
+            droneDest = enemyHQ.add(directions[random.nextInt(8)], 12);
+        
+        Direction destDir = myLoc.directionTo(droneDest);
+        if (destDir == Direction.NONE || destDir == Direction.OMNI)
             return;
-        }
-        
-        if (patrolIndex == -1 || (patrolSpot != null && rc.senseTerrainTile(patrolSpot) == TerrainTile.OFF_MAP))
-        {
-            if (patrolIndex != -1)
-                rc.broadcast(PATROL_DRONES + patrolIndex, -1);
-            patrolIndex = -1;
-            for (int i = 0; i < 8; i++)
-            {
-                int droneID = rc.readBroadcast(PATROL_DRONES + i);
-                if (droneID == 0 || (droneID > 0 && !rc.canSenseRobot(droneID)))  // not filled, or dead
-                {
-                    patrolIndex = i;
-                    patrolSpot = myHQ.add(directions[i], 6);
-                    rc.broadcast(PATROL_DRONES + i, myID);
-                    break;
-                }
-            }
-            if (patrolIndex == -1)
-            {
-                patrolIndex = 9;
-                patrolSpot = null;
-            }
-        }
-        
-        if (patrolIndex == 9)
-            tryRandomMove();
-        else if (myLoc.distanceSquaredTo(patrolSpot) > 1)
-            tryValidMove(myLoc.directionTo(patrolSpot), SAFE_CLAUSE);
+        Direction left, right, left2, right2, left3, right3, opp;
+        if (good[directionToInt(destDir)])
+            rc.move(destDir);
+        else if (good[directionToInt(left = destDir.rotateLeft())])
+            rc.move(left);
+        else if (good[directionToInt(right = destDir.rotateRight())])
+            rc.move(right);
+        else if (good[directionToInt(left2 = left.rotateLeft())])
+            rc.move(left2);
+        else if (good[directionToInt(right2 = right.rotateRight())])
+            rc.move(right2);
+        else if (good[8])
+            ;
+        else if (good[directionToInt(left3 = left2.rotateLeft())])
+            rc.move(left3);
+        else if (good[directionToInt(right3 = right2.rotateRight())])
+            rc.move(right3);
+        else if (good[directionToInt(opp = destDir.opposite())])
+            rc.move(opp);
     }
 
     static void runLab() throws Exception
