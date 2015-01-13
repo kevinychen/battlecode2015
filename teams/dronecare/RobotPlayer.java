@@ -480,7 +480,7 @@ public class RobotPlayer
                 }
             }
             
-            if (enemyHQ.distanceSquaredTo(loc) <= GameConstants.HQ_BUFFED_ATTACK_RADIUS_SQUARED)
+            if (enemyHQ.distanceSquaredTo(loc) <= 50)
                 scores[i] -= 600;
             for (MapLocation towerLoc : enemyTowers)
                 if (towerLoc.distanceSquaredTo(loc) <= RobotType.TOWER.attackRadiusSquared)
