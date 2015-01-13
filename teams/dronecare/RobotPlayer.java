@@ -505,9 +505,6 @@ public class RobotPlayer
             if (scores[i] == maxScore)
                 good[i] = true;
         
-        rc.setIndicatorString(1, Arrays.toString(scores));
-        rc.setIndicatorString(2, Arrays.toString(good));
-        
         // Low supply, go back to HQ
         if (myLoc.distanceSquaredTo(myHQ) + 500 >= mySupply / myType.supplyUpkeep * mySupply / myType.supplyUpkeep)
         {
@@ -518,17 +515,14 @@ public class RobotPlayer
             }
         }
 
-        if (droneDest != null && droneDest.equals(myHQ))
+        if (myHQ.equals(droneDest) && mySupply > supplyRefuel)
         {
-            if(mySupply > supplyRefuel)
-            {
-                supplyRefuel = -1;
-                droneDest = null;
-            }
+            supplyRefuel = -1;
+            droneDest = null;
         }
         else
         {
-            if (!droneDest.equals(enemyHQ) && myLoc.distanceSquaredTo(droneDest) <= 64)
+            if (droneDest != null && !enemyHQ.equals(droneDest) && myLoc.distanceSquaredTo(droneDest) <= 64)
                 droneDest = enemyHQ;
         }
 
