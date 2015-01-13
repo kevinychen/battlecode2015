@@ -410,100 +410,134 @@ public class RobotPlayer
         
         if (!rc.isCoreReady())
             return;
-        int[] scores = new int[9];
+        int[] scores = new int[16];
         RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
-        boolean seeMissile = false;
-        for (int i = 0; i < 9; i++)
+        for (RobotInfo r : enemies)
         {
-            MapLocation loc;
-            if (i < 8)
+            int dist = myLoc.distanceSquaredTo(r.location);
+            Direction dir = myLoc.directionTo(r.location), opp = dir.opposite();
+            if (r.type == RobotType.DRONE || r.type == RobotType.COMMANDER)
             {
-                if (!rc.canMove(directions[i]))
+                if (dist <= 4)
+                    ;
+                else if (dist == 5)
+                    scores[opp.ordinal()] += r.type.attackPower;
+                else if (dist <= 10)
                 {
-                    scores[i] = -1000;
-                    continue;
+                    scores[opp.ordinal()] += r.type.attackPower;
+                    scores[opp.rotateLeft().ordinal()] += r.type.attackPower;
+                    scores[opp.rotateRight().ordinal()] += r.type.attackPower;
                 }
-                loc = myLoc.add(directions[i]);
-            }
-            else
-            {
-                loc = myLoc;
-            }
-
-            for (int j = 0; j < enemies.length && j <= 10; j++)
-            {
-                RobotInfo r = enemies[j];
-                int dist = loc.distanceSquaredTo(r.location);
-                if (r.type == RobotType.DRONE || r.type == RobotType.COMMANDER)
+                else if (dist <= 17)
                 {
-                    if (dist <= r.type.attackRadiusSquared)
-                        scores[i] -= 100;
+                    scores[dir.ordinal()] -= r.type.attackPower;
+                    scores[dir.rotateLeft().ordinal()] -= r.type.attackPower;
+                    scores[dir.rotateRight().ordinal()] -= r.type.attackPower;
+                }
+                else
+                    scores[dir.ordinal()] -= RobotType.DRONE.attackPower;
+            }
+            else if (r.type == RobotType.MISSILE)
+            {
+                int dx = r.location.x - myLoc.x, dy = r.location.y - myLoc.y;
+                int adx = Math.abs(dx), ady = Math.abs(dy);
+                if (adx == ady)
+                {
+                    scores[opp.ordinal()] += RobotType.MISSILE.attackPower;
+                    scores[opp.rotateLeft().ordinal()] += RobotType.MISSILE.attackPower;
+                    scores[opp.rotateRight().ordinal()] += RobotType.MISSILE.attackPower;
+                }
+                else if (dist <= 13)
+                {
+                    Direction d;
+                    if (adx > ady)
+                        d = (dx > 0 ? Direction.WEST : Direction.EAST);
                     else
-                        scores[i] += 10;
-                }
-                else if (r.type == RobotType.MISSILE)
-                {
-                    if (dist <= 2)
-                        scores[i] -= 250;
-                    else if (dist <= 4)
-                        scores[i] -= 225;
-                    else if (dist <= 8)
-                        scores[i] -= 200;
-                    else if (dist <= 15)
-                        scores[i] -= 175;
-                    else if (dist <= 18)
-                        scores[i] -= 150;
+                        d = (dy > 0 ? Direction.NORTH : Direction.SOUTH);
 
-                    seeMissile = true;
+                    scores[d.ordinal()] += RobotType.MISSILE.attackPower;
+                    scores[d.rotateLeft().ordinal()] += RobotType.MISSILE.attackPower - 5;
+                    scores[d.rotateRight().ordinal()] += RobotType.MISSILE.attackPower - 5;
                 }
-                else if (r.type.isBuilding)
+                else
                 {
-                    scores[i] += 20;
-                }
-                else if (r.type == RobotType.LAUNCHER)
-                {
-                    if (dist <= 18)
-                        scores[i] -= 200;
-                }
-                else if (r.type == RobotType.TANK)
-                {
-                    if (dist <= r.type.attackRadiusSquared)
-                        scores[i] -= 200;
-                }
-                else if (r.type == RobotType.MINER || r.type == RobotType.BEAVER ||
-                        r.type == RobotType.SOLDIER || r.type == RobotType.BASHER)
-                {
-                    if (dist <= 8)
-                        scores[i] -= r.type.attackPower * 10;
-                    else if (dist <= 10)
-                        scores[i] += 20;
+                    Direction d;
+                    if (adx > ady)
+                        d = (dx > 0 ? Direction.EAST : Direction.WEST);
+                    else
+                        d = (dy > 0 ? Direction.SOUTH : Direction.NORTH);
+
+                    scores[d.ordinal()] -= RobotType.MISSILE.attackPower;
+                    scores[d.rotateLeft().ordinal()] -= RobotType.MISSILE.attackPower;
+                    scores[d.rotateRight().ordinal()] -= RobotType.MISSILE.attackPower;
                 }
             }
-            
+            else if (r.type == RobotType.LAUNCHER)
+            {
+                if (dist <= 16 || dist == 18)
+                {
+                    scores[opp.ordinal()] += RobotType.MISSILE.attackPower / 2;
+                    scores[opp.rotateLeft().ordinal()] += RobotType.MISSILE.attackPower / 2;
+                    scores[opp.rotateRight().ordinal()] += RobotType.MISSILE.attackPower / 2;
+                }
+                else
+                {
+                    scores[dir.ordinal()] -= RobotType.MISSILE.attackPower / 2;
+                    scores[dir.rotateLeft().ordinal()] -= RobotType.MISSILE.attackPower / 2;
+                    scores[dir.rotateRight().ordinal()] -= RobotType.MISSILE.attackPower / 2;
+                }
+            }
+            else if (r.type == RobotType.TANK)
+            {
+                scores[opp.ordinal()] += r.type.attackPower;
+                scores[opp.rotateLeft().ordinal()] += r.type.attackPower;
+                scores[opp.rotateRight().ordinal()] += r.type.attackPower;
+            }
+            else if (r.type == RobotType.SOLDIER || r.type == RobotType.BASHER ||
+                    r.type == RobotType.BEAVER || r.type == RobotType.MINER)
+            {
+                if (dist <= 8)
+                {
+                    scores[opp.ordinal()] += r.type.attackPower;
+                    scores[opp.rotateLeft().ordinal()] += r.type.attackPower;
+                    scores[opp.rotateRight().ordinal()] += r.type.attackPower;
+                }
+                else if (dist <= 10)
+                {
+                    scores[dir.ordinal()] -= r.type.attackPower;
+                    scores[dir.rotateLeft().ordinal()] -= r.type.attackPower;
+                    scores[dir.rotateRight().ordinal()] -= r.type.attackPower;
+                }
+                else
+                {
+                    scores[dir.ordinal()] += 5;
+                }
+            }
+        }
+//        rc.setIndicatorString(1, Arrays.toString(Direction.values()));
+//        rc.setIndicatorString(2, Arrays.toString(scores));
+        
+        for (Direction dir : directions)
+        {
+            MapLocation loc = myLoc.add(dir);
             if (enemyHQ.distanceSquaredTo(loc) <= 50)
-                scores[i] -= 600;
+                scores[dir.ordinal()] -= 500;
             for (MapLocation towerLoc : enemyTowers)
                 if (towerLoc.distanceSquaredTo(loc) <= RobotType.TOWER.attackRadiusSquared)
-                    scores[i] -= 500;
+                    scores[dir.ordinal()] -= 2 * RobotType.TOWER.attackPower;
         }
+            
+        int bestScore = scores[Direction.NONE.ordinal()];
+        for (Direction dir : directions)
+            if (rc.canMove(dir) && scores[dir.ordinal()] > bestScore)
+                bestScore = scores[dir.ordinal()];
         
-        if (seeMissile)
-        {
-            scores[1] -= 60;
-            scores[3] -= 60;
-            scores[5] -= 60;
-            scores[7] -= 60;
-        }
-        
-        int maxScore = -999;
-        for (int score : scores)
-            if (score > maxScore)
-                maxScore = score;
-        
-        final boolean[] good = new boolean[9];
-        for (int i = 0; i < 9; i++)
-            if (scores[i] == maxScore)
-                good[i] = true;
+        boolean[] good = new boolean[9];
+        for (Direction dir : directions)
+            if (rc.canMove(dir) && scores[dir.ordinal()] == bestScore)
+                good[dir.ordinal()] = true;
+        if (scores[Direction.NONE.ordinal()] == bestScore)
+            good[Direction.NONE.ordinal()] = true;
         
         // Low supply, go back to HQ
         if (myLoc.distanceSquaredTo(myHQ) + 500 >= mySupply / myType.supplyUpkeep * mySupply / myType.supplyUpkeep)
