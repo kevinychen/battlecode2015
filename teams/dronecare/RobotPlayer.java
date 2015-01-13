@@ -402,7 +402,6 @@ public class RobotPlayer
             trySpawn(RobotType.DRONE);
     }
     
-    static MapLocation droneDest = null;
     static double supplyRefuel = -1;
     static void runDrone() throws Exception
     {
@@ -412,6 +411,7 @@ public class RobotPlayer
             return;
         int[] scores = new int[16];
         RobotInfo[] enemies = rc.senseNearbyRobots(myType.sensorRadiusSquared, enemyTeam);
+        boolean seeMissile = false;
         for (RobotInfo r : enemies)
         {
             int dist = myLoc.distanceSquaredTo(r.location);
@@ -439,6 +439,7 @@ public class RobotPlayer
             }
             else if (r.type == RobotType.MISSILE)
             {
+                seeMissile = true;
                 int dx = r.location.x - myLoc.x, dy = r.location.y - myLoc.y;
                 int adx = Math.abs(dx), ady = Math.abs(dy);
                 if (adx == ady)
@@ -458,6 +459,7 @@ public class RobotPlayer
                     scores[d.ordinal()] += RobotType.MISSILE.attackPower;
                     scores[d.rotateLeft().ordinal()] += RobotType.MISSILE.attackPower - 5;
                     scores[d.rotateRight().ordinal()] += RobotType.MISSILE.attackPower - 5;
+                    scores[Direction.NONE.ordinal()]--;
                 }
                 else
                 {
@@ -470,10 +472,12 @@ public class RobotPlayer
                     scores[d.ordinal()] -= RobotType.MISSILE.attackPower;
                     scores[d.rotateLeft().ordinal()] -= RobotType.MISSILE.attackPower;
                     scores[d.rotateRight().ordinal()] -= RobotType.MISSILE.attackPower;
+                    scores[Direction.NONE.ordinal()]--;
                 }
             }
             else if (r.type == RobotType.LAUNCHER)
             {
+                seeMissile = true;
                 if (dist <= 16 || dist == 18)
                 {
                     scores[opp.ordinal()] += RobotType.MISSILE.attackPower / 2;
@@ -493,8 +497,7 @@ public class RobotPlayer
                 scores[opp.rotateLeft().ordinal()] += r.type.attackPower;
                 scores[opp.rotateRight().ordinal()] += r.type.attackPower;
             }
-            else if (r.type == RobotType.SOLDIER || r.type == RobotType.BASHER ||
-                    r.type == RobotType.BEAVER || r.type == RobotType.MINER)
+            else
             {
                 if (dist <= 8)
                 {
@@ -508,15 +511,29 @@ public class RobotPlayer
                     scores[dir.rotateLeft().ordinal()] -= r.type.attackPower;
                     scores[dir.rotateRight().ordinal()] -= r.type.attackPower;
                 }
+                else if (dist <= 13)
+                {
+                    scores[dir.ordinal()] += 5;
+                }
                 else
                 {
                     scores[dir.ordinal()] += 5;
+                    scores[dir.rotateLeft().ordinal()] += 5;
+                    scores[dir.rotateRight().ordinal()] += 5;
                 }
             }
         }
 //        rc.setIndicatorString(1, Arrays.toString(Direction.values()));
 //        rc.setIndicatorString(2, Arrays.toString(scores));
         
+        if (seeMissile && rc.getCoreDelay() > 0.6)
+        {
+            scores[Direction.NORTH_WEST.ordinal()] -= RobotType.MISSILE.attackPower;
+            scores[Direction.NORTH_EAST.ordinal()] -= RobotType.MISSILE.attackPower;
+            scores[Direction.SOUTH_WEST.ordinal()] -= RobotType.MISSILE.attackPower;
+            scores[Direction.SOUTH_EAST.ordinal()] -= RobotType.MISSILE.attackPower;
+        }
+
         for (Direction dir : directions)
         {
             MapLocation loc = myLoc.add(dir);
@@ -524,7 +541,7 @@ public class RobotPlayer
                 scores[dir.ordinal()] -= 500;
             for (MapLocation towerLoc : enemyTowers)
                 if (towerLoc.distanceSquaredTo(loc) <= RobotType.TOWER.attackRadiusSquared)
-                    scores[dir.ordinal()] -= 2 * RobotType.TOWER.attackPower;
+                    scores[dir.ordinal()] -= 500;
         }
             
         int bestScore = scores[Direction.NONE.ordinal()];
@@ -545,46 +562,19 @@ public class RobotPlayer
             if (supplyRefuel == -1)
             {
                 supplyRefuel = mySupply;
-                droneDest = myHQ;
+                Bugger.set(myHQ);
             }
         }
 
-        if (myHQ.equals(droneDest) && mySupply > supplyRefuel)
+        if (myHQ.equals(Bugger.dest) && mySupply > supplyRefuel)
         {
             supplyRefuel = -1;
-            droneDest = null;
+            Bugger.set(null);
         }
-        else
-        {
-            if (droneDest != null && !enemyHQ.equals(droneDest) && myLoc.distanceSquaredTo(droneDest) <= 64)
-                droneDest = enemyHQ;
-        }
-
-        if (droneDest == null)
-            droneDest = enemyHQ.add(directions[random.nextInt(8)], 12);
+        if (Bugger.dest == null)
+            Bugger.set(enemyHQ);
         
-        Direction destDir = myLoc.directionTo(droneDest);
-        if (destDir == Direction.NONE || destDir == Direction.OMNI)
-            return;
-        Direction left, right, left2, right2, left3, right3, opp;
-        if (good[directionToInt(destDir)])
-            rc.move(destDir);
-        else if (good[directionToInt(left = destDir.rotateLeft())])
-            rc.move(left);
-        else if (good[directionToInt(right = destDir.rotateRight())])
-            rc.move(right);
-        else if (good[directionToInt(left2 = left.rotateLeft())])
-            rc.move(left2);
-        else if (good[directionToInt(right2 = right.rotateRight())])
-            rc.move(right2);
-        else if (good[8])
-            ;
-        else if (good[directionToInt(left3 = left2.rotateLeft())])
-            rc.move(left3);
-        else if (good[directionToInt(right3 = right2.rotateRight())])
-            rc.move(right3);
-        else if (good[directionToInt(opp = destDir.opposite())])
-            rc.move(opp);
+        Bugger.fun(good);
     }
 
     static void runLab() throws Exception
@@ -614,9 +604,12 @@ public class RobotPlayer
                 Bugger.set(frontier);
             else
                 Bugger.set(enemyHQ);
-            Direction dir = Bugger.getDir();
-            if (dir != null)
-                rc.move(dir);
+            
+            boolean[] good = new boolean[16];
+            for (Direction dir : directions)
+                if (rc.canMove(dir))
+                    good[dir.ordinal()] = true;
+            Bugger.bug(good);
         }
     }
 
@@ -864,8 +857,10 @@ public class RobotPlayer
         static final int BUG_RIGHT = 2;
     
         static MapLocation dest;
+        static MapLocation prevLoc;
         static int state;
         static int lastBugState;
+        static int funState;
         
         // Only valid when bugging
         static Direction bugDir;
@@ -874,26 +869,74 @@ public class RobotPlayer
         static MapLocation hitWallLoc;
         
         static void set(MapLocation dest) {
-            if (!dest.equals(Bugger.dest))
+            if (dest == null)
+                Bugger.dest = null;
+            else if (!dest.equals(Bugger.dest))
             {
                 Bugger.dest = dest;
                 state = FORWARD;
-                lastBugState = BUG_LEFT;
+
+                funState = random.nextInt(3);
+                if (funState == 1)
+                    lastBugState = BUG_LEFT;
+                else if (funState == 2)
+                    lastBugState = BUG_RIGHT;
             }
         }
         
-        static Direction getDir() throws Exception {
+        static void move(Direction dir) throws Exception {
+            prevLoc = myLoc.add(dir);
+            rc.move(dir);
+        }
+        
+        static void fun(boolean[] good) throws Exception {
+            if (funState == 0)
+                push(myLoc.directionTo(dest), good);
+            else
+                bug(good);
+        }
+        
+        static void push(Direction dir, boolean[] good) throws Exception {
+            Direction left, right, left2, right2, left3, right3, opp;
+            if (good[dir.ordinal()])
+                move(dir);
+            else if (good[(left = dir.rotateLeft()).ordinal()])
+                move(left);
+            else if (good[(right = dir.rotateRight()).ordinal()])
+                move(right);
+            else if (good[(left2 = left.rotateLeft()).ordinal()])
+                move(left2);
+            else if (good[(right2 = right.rotateRight()).ordinal()])
+                move(right2);
+            else if (good[Direction.NONE.ordinal()])
+                ;
+            else if (good[(left3 = left2.rotateLeft()).ordinal()])
+                move(left3);
+            else if (good[(right3 = right2.rotateRight()).ordinal()])
+                move(right3);
+            else if (good[(opp = dir.opposite()).ordinal()])
+                move(opp);
+        }
+        
+        static void bug(boolean[] good) throws Exception {
+            if (prevLoc != null && !prevLoc.equals(myLoc))
+            {
+                // Unexpected position; move back
+                push(myLoc.directionTo(prevLoc), good);
+                return;
+            }
+
             // Update state
             Direction dir = myLoc.directionTo(dest);
             if (state == FORWARD) {
-                if (!rc.canMove(dir)) {
+                if (!good[dir.ordinal()]) {
                     state = lastBugState == BUG_LEFT ? BUG_RIGHT : BUG_LEFT;
                     bugDir = dir;
                     bugDirIndex = hitWallDirIndex = directionToInt(dir);
                     hitWallLoc = myLoc;
                 }
             } else {
-                if (rc.canMove(dir) && dir != bugDir.opposite()) {
+                if (good[dir.ordinal()] && dir != bugDir.opposite()) {
                     int newBugDirIndex = align(bugDirIndex, directionToInt(dir));
                     if (state == BUG_LEFT && newBugDirIndex <= hitWallDirIndex + 4 ||
                             state == BUG_RIGHT && newBugDirIndex >= hitWallDirIndex - 4) {
@@ -905,7 +948,7 @@ public class RobotPlayer
 
             // Move
             if (state == FORWARD) {
-                return dir;
+                move(dir);
             } else {
                 int candDirIndex = bugDirIndex;
                 Direction candDir = bugDir;
@@ -918,10 +961,11 @@ public class RobotPlayer
                 }
                 Direction startDir = candDir;
                 do {
-                    if (rc.canMove(candDir)) {
+                    if (good[candDir.ordinal()]) {
                         bugDir = candDir;
                         bugDirIndex = candDirIndex;
-                        return candDir;
+                        move(candDir);
+                        return;
                     }
                     if (state == BUG_LEFT) {
                         candDirIndex++;
@@ -931,7 +975,6 @@ public class RobotPlayer
                         candDir = candDir.rotateLeft();
                     }
                 } while (candDir != startDir);
-                return null;
             }
         }
         
