@@ -327,7 +327,7 @@ public class RobotPlayer
         final int HQ_DIST = roundNum < 500 ? 15 : (roundNum < 1000 ? 35 : 80);
         if (myLoc.distanceSquaredTo(myHQ) >= HQ_DIST)
             tryWander(directionToInt(myLoc.directionTo(myHQ)));
-        else
+        else if (roundNum > 50)
             tryRandomMove();
     }
 
