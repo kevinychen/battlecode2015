@@ -73,6 +73,8 @@ public class RobotPlayer
     static final int ENEMY_ARMY_LOC = 40;
     static final int ENEMY_ECON_LOC = 41;
     static final int DEFEND_CALL = 42;
+    static final int MISSILE_TARGETS = 32768;  // to 65536
+    static final int NUM_MISSILE_TARGET_CHANNELS = 16384;
 
     // Game constants
     static RobotController rc;
@@ -585,16 +587,17 @@ public class RobotPlayer
     static void runLauncher() throws Exception
     {
         RobotInfo[] enemies = rc.senseNearbyRobots(LAUNCHER_RANGE, enemyTeam);
-        if (enemies.length > 0)
-        {
-            tryLaunch(directionToInt(myLoc.directionTo(enemies[0].location)));
-            return;
-        }
+        for (RobotInfo r : enemies)
+            if (r.type != RobotType.MISSILE)
+            {
+                tryLaunch(directionToInt(myLoc.directionTo(r.location)), r.location, r.ID);
+                return;
+            }
         
         for (MapLocation enemyTower : enemyTowers)
             if (myLoc.distanceSquaredTo(enemyTower) < LAUNCHER_RANGE)
             {
-                tryLaunch(directionToInt(myLoc.directionTo(enemyTower)));
+                tryLaunch(directionToInt(myLoc.directionTo(enemyTower)), enemyTower, -1);
                 return;
             }
                 
@@ -613,20 +616,27 @@ public class RobotPlayer
         }
     }
 
+    static int missileTargetID;
+    static MapLocation missileTargetLoc;
     static void runMissile() throws Exception
     {
-        RobotInfo[] enemies = rc.senseNearbyRobots(mySensors, enemyTeam);
-        if (enemies.length != 0)
+        if (missileTargetID == 0)
         {
-            tryMissileMove(myLoc.directionTo(enemies[0].location));
-            return;
+            int missileChannel = hashMissile(roundNum, myLoc);
+            missileTargetID = rc.readBroadcast(missileChannel);
+            missileTargetLoc = intToMapLocation(rc.readBroadcast(missileChannel + 1));
         }
-        RobotInfo[] allies = rc.senseNearbyRobots(mySensors, myTeam);
-        if (allies.length != 0)
-        {
-            tryMissileMove(allies[0].location.directionTo(myLoc));
-            return;
-        }
+        
+        MapLocation targetLoc;
+        if (rc.canSenseRobot(missileTargetID))
+            targetLoc = rc.senseRobot(missileTargetID).location;
+        else
+            targetLoc = missileTargetLoc;
+        
+        if (myLoc.distanceSquaredTo(targetLoc) <= 2)
+            rc.explode();
+        else
+            tryMissileMove(myLoc.directionTo(targetLoc));
     }
 
     // This method will attack an enemy in sight, if there is one
@@ -781,7 +791,7 @@ public class RobotPlayer
         return false;
     }
 
-    static void tryLaunch(int dirint) throws GameActionException
+    static void tryLaunch(int dirint, MapLocation targetLoc, int targetID) throws GameActionException
     {
         if (!rc.isCoreReady())
             return;
@@ -794,7 +804,12 @@ public class RobotPlayer
         }
         if (offsetIndex < 5)
         {
-            rc.launchMissile(directions[(dirint + offsets[offsetIndex] + 8) % 8]);
+            Direction dir = directions[(dirint + offsets[offsetIndex] + 8) % 8];
+            rc.launchMissile(dir);
+            
+            int missileChannel = hashMissile(roundNum, myLoc.add(dir));
+            rc.broadcast(missileChannel, targetID);
+            rc.broadcast(missileChannel + 1, mapLocationToInt(targetLoc));
         }
     }
 
@@ -844,6 +859,11 @@ public class RobotPlayer
                 return true;
 
         return false;
+    }
+    
+    static int hashMissile(int roundNum, MapLocation mapLoc)
+    {
+        return MISSILE_TARGETS + (roundNum * 9701 + mapLocationToInt(mapLoc)) % NUM_MISSILE_TARGET_CHANNELS * 2;
     }
     
     interface Clause
